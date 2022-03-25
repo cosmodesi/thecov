@@ -6,8 +6,11 @@ import numpy as np
 import dask.array as da
 from scipy import fft
 from scipy import interpolate
+from scipy import integrate
 
 from tqdm import tqdm
+
+from . import Trispectrum
 
 
 class BaseCovariance(ABC):
@@ -27,15 +30,11 @@ class BaseCovariance(ABC):
         self._kmin = kmin
         self._k = np.arange(kmin+dk/2, kmax+dk/2, dk)
 
-    def load_multipole(self, k, P_ell, ell, smoothing=None):
-        if smoothing:
-            k, P_ell = copy.copy(k), copy.copy(P_ell)
-            k, P_ell = moving_average([k, P_ell], smoothing)
-
+    def load_multipole(self, k, P_ell, ell):
         self._P[ell] = interpolate.InterpolatedUnivariateSpline(k, P_ell)
 
-    def set_multipole_interpolator(self, p_ell_k, ell):
-        self._P[ell] = p_ell_k
+    def set_multipole_interpolator(self, P_ell_k, ell):
+        self._P[ell] = P_ell_k
 
     def get_multipole_interpolator(self, ell):
         return self._P[ell]
@@ -630,6 +629,7 @@ class GaussianSurveyWindowCovariance(BaseCovariance):
 
     def compute_covariance(self):
         self.compute_gaussian_covariance()
+        self._covariance = self._gaussian_covariance
 
     def compute_gaussian_covariance(self):
         self._Pfit = {key: self._P[key](self._k) for key in self._P.keys()}
@@ -647,7 +647,7 @@ class GaussianSurveyWindowCovariance(BaseCovariance):
 
         C = self._multipole_covariance
 
-        self._covariance = np.block([
+        self._gaussian_covariance = np.block([
             [C[0,0], C[0,2], C[0,4]],
             [C[0,2], C[2,2], C[2,4]],
             [C[0,4], C[2,4], C[4,4]],
@@ -685,3 +685,54 @@ class GaussianSurveyWindowCovariance(BaseCovariance):
 
         return Crow
 
+class SurveyWindowCovariance(GaussianSurveyWindowCovariance):
+
+    def set_bias_parameters(self, b1, be, g2, b2, g3, g2x, g21, b3):
+        self.T0 = Trispectrum.T0(b1, be, g2, b2, g3, g2x, g21, b3)
+
+    def load_Plin(self, k, P):
+        self.Plin = interpolate.InterpolatedUnivariateSpline(k, P)
+
+    def _trispectrum_element(self, l1, l2, k1, k2):
+        # Returns the tree-level trispectrum as a function of multipoles and k1, k2
+        T0 = self.T0
+        Plin = self.Plin
+
+        T0.l1 = l1
+        T0.l2 = l2
+
+        trisp_integrand = np.vectorize(self._trispectrum_integrand)
+
+        expr =    self.I['44']*(Plin(k1)**2*Plin(k2)*T0.ez3(k1,k2) + Plin(k2)**2*Plin(k1)*T0.ez3(k2,k1))\
+              + 8*self.I['34']* Plin(k1)*Plin(k2)*T0.e34o44_1(k1,k2)
+
+        return (integrate.quad(trisp_integrand, -1, 1, args=(k1,k2))[0]/2. + expr)/self.I['22']**2
+
+    def _trispectrum_integrand(self, u12, k1, k2):
+
+        Plin = self.Plin
+        T0   = self.T0
+
+        return  (    8*self.I['44']*(Plin(k1)**2*T0.e44o44_1(u12,k1,k2) + Plin(k2)**2*T0.e44o44_1(u12,k2,k1))
+                  + 16*self.I['44']*Plin(k1)*Plin(k2)*T0.e44o44_2(u12,k1,k2)
+                  +  8*self.I['34']*(Plin(k1)*T0.e34o44_2(u12,k1,k2) + Plin(k2)*T0.e34o44_2(u12,k2,k1))
+                  +  2*self.I['24']*T0.e24o44(u12,k1,k2)
+                ) * Plin(np.sqrt(k1**2+k2**2+2*k1*k2*u12))
+
+    def compute_trispectrum_covariance(self, tqdm=tqdm):
+
+        kbins = self.kbins
+        k = self._k
+
+        trisp = np.vectorize(self._trispectrum_element)
+
+        covaT0mult = np.zeros(2*[2*kbins])
+
+        for i in tqdm(range(kbins), total=kbins, desc="Computing trispectrum contribution"):
+            covaT0mult[i,      :kbins]  = trisp(0, 0, k[i], k)
+            covaT0mult[i,       kbins:] = trisp(0, 2, k[i], k)
+            covaT0mult[kbins+i, kbins:] = trisp(2, 2, k[i], k)
+
+        covaT0mult[kbins:, :kbins] = np.transpose(covaT0mult[:kbins, kbins:])
+
+        self._trispectrum_covariance = covaT0mult
