@@ -10,19 +10,65 @@ from scipy import integrate
 
 from tqdm import tqdm
 
-from . import Trispectrum
+from . import Trispectrum, utils
 
 
-class BaseCovariance(ABC):
+class Covariance():
+
+    def __init__(self, covariance=None):
+        self._covariance = covariance
+
+    @property
+    def cov(self):
+        return self._covariance
+
+    @property
+    def cor(self):
+        v = np.sqrt(np.diag(self._covariance))
+        outer_v = np.outer(v, v)
+        outer_v[outer_v == 0] = np.inf
+        correlation = self._covariance / outer_v
+        correlation[self._covariance == 0] = 0
+        return correlation
+
+    def __add__(self, y):
+        return Covariance(self.cov + (y.cov if isinstance(y, Covariance) else y))
+
+    def __sub__(self, y):
+        return Covariance(self.cov - (y.cov if isinstance(y, Covariance) else y))
+
+    def save(self, filename):
+        np.savez(filename if filename.strip()[-4:] == '.npz' else filename + '.npz',
+                 covariance=self._covariance)
+
+    @classmethod
+    def load(cls, filename):
+        covariance = cls()
+        with np.load(filename, mmap_mode='r') as data:
+            covariance._covariance = data['covariance']
+        return covariance
+
+    @classmethod
+    def loadtxt(cls, *args, **kwargs):
+        covariance = cls()
+        covariance._covariance = np.loadtxt(*args, **kwargs)
+        return covariance
+
+    @classmethod
+    def from_array(cls, a):
+        covariance = cls()
+        covariance._covariance = a
+        return a
+
+class PowerCovariance(Covariance):
 
     def __init__(self):
-        self._k = None
+        super().__init__()
+
         self._kmin = None
-        self._dk = None
         self._kmax = None
-        self._multipole_covariance = None
-        self._covariance = None
-        self._P = {}
+        self._dk = None
+        self._k = None
 
     def set_kbins(self, kmin, kmax, dk):
         self._dk = dk
@@ -30,6 +76,22 @@ class BaseCovariance(ABC):
         self._kmin = kmin
         self._k = np.arange(kmin+dk/2, kmax+dk/2, dk)
 
+    @property
+    def kbins(self):
+        return len(self._k)
+
+    @property
+    def k(self):
+        return self._k
+
+class PowerMultipoleCovariance(PowerCovariance):
+
+    def __init__(self):
+        super().__init__()
+
+        self._multipole_covariance = None
+        self._P = {}
+        
     def load_multipole(self, k, P_ell, ell):
         self._P[ell] = interpolate.InterpolatedUnivariateSpline(k, P_ell)
 
@@ -39,42 +101,29 @@ class BaseCovariance(ABC):
     def get_multipole_interpolator(self, ell):
         return self._P[ell]
 
-    @property
-    def kbins(self):
-        return len(self._k)
-
-    @staticmethod
-    def cov2corr(covariance):
-        v = np.sqrt(np.diag(covariance))
-        outer_v = np.outer(v, v)
-        outer_v[outer_v == 0] = np.inf
-        correlation = covariance / outer_v
-        correlation[covariance == 0] = 0
-        return correlation
-
-    @staticmethod
-    def triangle_covs(upper, lower, diagonal='upper'):
-        assert diagonal in ['upper', 'lower']
-        cov = np.triu(upper) + np.tril(lower)
-        cov -= np.diag(np.diag(upper if diagonal == 'lower' else lower))
-        return
-
-    @property
-    def covariance(self):
-        return self._covariance
-
-    @property
-    def correlation(self):
-        return self.cov2corr(self.covariance)
-
     def get_multipole_covariance(self, l1=None, l2=None):
+        if  self._multipole_covariance == None:
+            kbins = self.cov.shape[0]//3 # TODO: improve this
+            self._multipole_covariance = {}
+            self._multipole_covariance[0,0] = Covariance(self.cov[:kbins, :kbins])
+            self._multipole_covariance[0,2] = Covariance(self.cov[:kbins, kbins:2*kbins])
+            self._multipole_covariance[0,4] = Covariance(self.cov[:kbins, 2*kbins:3*kbins])
+            self._multipole_covariance[2,2] = Covariance(self.cov[kbins:2*kbins,   kbins:2*kbins])
+            self._multipole_covariance[2,4] = Covariance(self.cov[kbins:2*kbins, 2*kbins:3*kbins])
+            self._multipole_covariance[4,4] = Covariance(self.cov[2*kbins:3*kbins, 2*kbins:3*kbins])
+
         if None in (l1, l2):
             assert l1 == None and l2 == None
             return self._multipole_covariance
 
         return self._multipole_covariance[l1,l2]
 
-class GaussianBoxCovariance(BaseCovariance):
+    @property
+    def mcov(self):
+        return self.get_multipole_covariance()
+
+
+class GaussianBoxCovariance(PowerMultipoleCovariance):
 
     def __init__(self, Lbox=None, nbar=None):
         super().__init__()
@@ -92,9 +141,6 @@ class GaussianBoxCovariance(BaseCovariance):
         self.nbar = 1/Pshot
 
     def compute_covariance(self):
-        self.compute_gaussian_covariance()
-
-    def compute_gaussian_covariance(self):
         Cov = self._compute_gaussian_covariance_diagonal()
         self._multipole_covariance = {key: np.diag(Cov[key]) for key in Cov.keys()}
         self._covariance = np.block([[np.diag(Cov[l1,l2]) if l1 < l2 else np.diag(Cov[l2,l1]).T for l1 in [0,2,4]] for l2 in [0,2,4]])
@@ -122,7 +168,7 @@ class GaussianBoxCovariance(BaseCovariance):
         return Cov
 
 
-class GaussianSurveyWindowCovariance(BaseCovariance):
+class GaussianSurveyWindowCovariance(PowerMultipoleCovariance):
 
     @classmethod
     def from_randoms(cls):
@@ -150,8 +196,7 @@ class GaussianSurveyWindowCovariance(BaseCovariance):
         self.randoms['RelativePosition'] = self.randoms['Position']
         self.randoms['Position'] += da.array(3*[self.BoxSize/2])
 
-        self.norm = self.randoms.size * self.alpha / self.BoxSize**3
-        self.d3x = (self.BoxSize/self.Nmesh)**3
+        self.ngals = self.randoms.size * self.alpha
 
         self._I = {}
         for i,j in ['22', '11', '12', '10', '24', '14', '34', '44', '32']:
@@ -177,21 +222,17 @@ class GaussianSurveyWindowCovariance(BaseCovariance):
             Fij[w] = self.randoms.to_mesh(value=w, **mesh_kwargs).paint(mode='complex')
             print(' Done!')
 
-            # Normalizing FFTs such that W_ij(k = 0) == I_ij
-            norm = self.I[w[1:]]/np.real(Fij[w][0,0,0])
-            Fij[w] *= norm
-
             print('Computing 2nd order moments')
             for (i,i_label),(j,j_label) in tqdm(itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=2), total=num_ffts(2)):
                 label = w + i_label + j_label
                 self.randoms[label] = self.randoms[w] * x[i]*x[j] /(x[0]**2 + x[1]**2 + x[2]**2)
-                Fij[label] = norm*self.randoms.to_mesh(value=label, **mesh_kwargs).paint(mode='complex')
+                Fij[label] = self.randoms.to_mesh(value=label, **mesh_kwargs).paint(mode='complex')
 
             print('Computing 4th order moments')
             for (i,i_label),(j,j_label),(k,k_label),(l,l_label) in tqdm(itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=4), total=num_ffts(4)):
                 label = w + i_label + j_label + k_label + l_label
                 self.randoms[label] = self.randoms[w] * x[i]*x[j]*x[k]*x[l] /(x[0]**2 + x[1]**2 + x[2]**2)**2
-                Fij[label] = norm*self.randoms.to_mesh(value=label, **mesh_kwargs).paint(mode='complex')
+                Fij[label] = self.randoms.to_mesh(value=label, **mesh_kwargs).paint(mode='complex')
 
         self._W = {k[1:]: self._format_fft(Fij[k], k[:3]) for k in Fij.keys()}
 
@@ -593,27 +634,15 @@ class GaussianSurveyWindowCovariance(BaseCovariance):
 
         return avgWij
 
-    @staticmethod
-    def r2c_to_c2c_3d(fourier):
-
-        fourier_c = np.conj(fourier[:, :, (-2 if fourier.shape[0]%2 == 0 else -1):0:-1])
-
-        fourier_c[1:, :, :] = fourier_c[:0:-1, :, :]
-        fourier_c[:, 1:, :] = fourier_c[:, :0:-1, :]
-
-        return np.concatenate((fourier, fourier_c), axis=2)
-
-
     def _format_fft(self, fourier, window):
 
         # PFFT omits modes that are determined by the Hermitian condition. Adding them:
-        fourier_full = self.r2c_to_c2c_3d(fourier)
+        fourier_full = utils.r2c_to_c2c_3d(fourier)
 
         if window == 'W12':
             fourier_full = np.conj(fourier_full)
 
-        # return self.BoxSize**3 / (2*np.pi)**3 / self.d3x / self.norm * fft.fftshift(fourier_full)[::-1,::-1,::-1]
-        return fft.fftshift(fourier_full)[::-1,::-1,::-1]
+        return fft.fftshift(fourier_full)[::-1,::-1,::-1] * self.ngals
 
     @property
     def I(self):
@@ -628,26 +657,22 @@ class GaussianSurveyWindowCovariance(BaseCovariance):
         return self._randoms
 
     def compute_covariance(self):
-        self.compute_gaussian_covariance()
-        self._covariance = self._gaussian_covariance
-
-    def compute_gaussian_covariance(self):
         self._Pfit = {key: self._P[key](self._k) for key in self._P.keys()}
 
         Cov = np.array([self._compute_gaussian_covariance_row(ki) for ki, k in enumerate(self._k)])
 
         self._multipole_covariance = {
-            (0,0): Cov[:,:,0],
-            (2,2): Cov[:,:,1],
-            (4,4): Cov[:,:,2],
-            (0,2): Cov[:,:,3],
-            (0,4): Cov[:,:,4],
-            (2,4): Cov[:,:,5],
+            (0,0): Covariance(Cov[:,:,0]),
+            (2,2): Covariance(Cov[:,:,1]),
+            (4,4): Covariance(Cov[:,:,2]),
+            (0,2): Covariance(Cov[:,:,3]),
+            (0,4): Covariance(Cov[:,:,4]),
+            (2,4): Covariance(Cov[:,:,5]),
         }
 
-        C = self._multipole_covariance
+        C = {k: self._multipole_covariance[k].cov for k in self._multipole_covariance.keys()}
 
-        self._gaussian_covariance = np.block([
+        self._covariance = np.block([
             [C[0,0], C[0,2], C[0,4]],
             [C[0,2], C[2,2], C[2,4]],
             [C[0,4], C[2,4], C[4,4]],
@@ -685,7 +710,15 @@ class GaussianSurveyWindowCovariance(BaseCovariance):
 
         return Crow
 
-class SurveyWindowCovariance(GaussianSurveyWindowCovariance):
+class TrispectrumSurveyWindowCovariance(PowerMultipoleCovariance):
+
+    def __init__(self, gaussian_cov=None):
+        super().__init__()
+        self._covariance = None
+        self.T0 = None
+        self.Plin = None
+
+        self._gaussian_cov = gaussian_cov
 
     def set_bias_parameters(self, b1, be, g2, b2, g3, g2x, g21, b3):
         self.T0 = Trispectrum.T0(b1, be, g2, b2, g3, g2x, g21, b3)
@@ -694,6 +727,12 @@ class SurveyWindowCovariance(GaussianSurveyWindowCovariance):
         self.Plin = interpolate.InterpolatedUnivariateSpline(k, P)
 
     def _trispectrum_element(self, l1, l2, k1, k2):
+
+        # We'll still implement hexadecupole in trispectrum.
+        # For now, return 0 
+        if 4 in (l1,l2): 
+            return 0
+
         # Returns the tree-level trispectrum as a function of multipoles and k1, k2
         T0 = self.T0
         Plin = self.Plin
@@ -719,20 +758,29 @@ class SurveyWindowCovariance(GaussianSurveyWindowCovariance):
                   +  2*self.I['24']*T0.e24o44(u12,k1,k2)
                 ) * Plin(np.sqrt(k1**2+k2**2+2*k1*k2*u12))
 
-    def compute_trispectrum_covariance(self, tqdm=tqdm):
+    def compute_covariance(self, tqdm=tqdm):
 
-        kbins = self.kbins
-        k = self._k
+        kbins = self._gaussian_cov.kbins
+        k = self._gaussian_cov.k
 
         trisp = np.vectorize(self._trispectrum_element)
 
-        covaT0mult = np.zeros(2*[2*kbins])
+        covaT0mult = np.zeros(2*[3*kbins])
 
         for i in tqdm(range(kbins), total=kbins, desc="Computing trispectrum contribution"):
-            covaT0mult[i,      :kbins]  = trisp(0, 0, k[i], k)
-            covaT0mult[i,       kbins:] = trisp(0, 2, k[i], k)
-            covaT0mult[kbins+i, kbins:] = trisp(2, 2, k[i], k)
+            covaT0mult[i,        :  kbins] = trisp(0, 0, k[i], k)
+            covaT0mult[i,   kbins:2*kbins] = trisp(0, 2, k[i], k)
+            covaT0mult[i, 2*kbins:3*kbins] = trisp(0, 4, k[i], k)
+            
+            covaT0mult[kbins+i,   kbins:2*kbins] = trisp(2, 2, k[i], k)
+            covaT0mult[kbins+i, 2*kbins:3*kbins] = trisp(2, 4, k[i], k)
+
+            covaT0mult[2*kbins+i, 2*kbins:3*kbins] = trisp(4, 4, k[i], k)
 
         covaT0mult[kbins:, :kbins] = np.transpose(covaT0mult[:kbins, kbins:])
 
-        self._trispectrum_covariance = covaT0mult
+        self._covariance = covaT0mult
+
+    @property
+    def I(self):
+        return self._gaussian_cov.I
