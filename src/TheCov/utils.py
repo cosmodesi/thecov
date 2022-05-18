@@ -1,4 +1,6 @@
 
+import numpy as np
+
 def r2c_to_c2c_3d(fourier):
 
     fourier_c = np.conj(fourier[:, :, (-2 if fourier.shape[0]%2 == 0 else -1):0:-1])

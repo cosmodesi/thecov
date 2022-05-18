@@ -58,7 +58,7 @@ class Covariance():
     def from_array(cls, a):
         covariance = cls()
         covariance._covariance = a
-        return a
+        return covariance
 
 class PowerCovariance(Covariance):
 
@@ -202,44 +202,45 @@ class GaussianSurveyWindowCovariance(PowerMultipoleCovariance):
         for i,j in ['22', '11', '12', '10', '24', '14', '34', '44', '32']:
             self.randoms[f'W{i}{j}'] = self.randoms['NZ']**(int(i)-1) * self.randoms['WEIGHT_FKP']**int(j)
             # Computing I_ij integrals
-            self._I[f'{i}{j}'] = self.randoms[f'W{i}{j}'].sum() * self.alpha
+            self._I[f'{i}{j}'] = (self.randoms[f'W{i}{j}'].sum() * self.alpha).compute()
 
-    def compute_cartesian_ffts(self, Wij=('W12', 'W22'), tqdm=tqdm):
+    def compute_cartesian_fft(self, W, tqdm=tqdm):
         num_ffts = lambda l: (l+1)*(l+2)/2
 
         mesh_kwargs = self._mesh_kwargs
 
-        Fij = {}
-        self._I = {k: self.I[k].compute() for k in self.I.keys()}
+        # self._I = {k: self._I[k].compute() for k in self._I.keys()}
 
         x = self.randoms['RelativePosition'].T
 
-        for w in Wij:
+        print(f'Computing moments of W{W}')
 
-            print(f'Computing moments of {w}')
+        print('Computing 0th order moment...', end='')
+        self._W[W] = self._format_fft(self.randoms.to_mesh(value=f'W{W}', **mesh_kwargs).paint(mode='complex'), W)
+        print(' Done!')
 
-            print('Computing 0th order moment...', end='')
-            Fij[w] = self.randoms.to_mesh(value=w, **mesh_kwargs).paint(mode='complex')
-            print(' Done!')
+        print('Computing 2nd order moments')
+        for (i,i_label),(j,j_label) in tqdm(itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=2), total=num_ffts(2)):
+            label = 'W' + W + i_label + j_label
+            self.randoms[label] = self.randoms[f'W{W}'] * x[i]*x[j] /(x[0]**2 + x[1]**2 + x[2]**2)
+            self._W[label[1:]] = self._format_fft(self.randoms.to_mesh(value=label, **mesh_kwargs).paint(mode='complex'), W)
 
-            print('Computing 2nd order moments')
-            for (i,i_label),(j,j_label) in tqdm(itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=2), total=num_ffts(2)):
-                label = w + i_label + j_label
-                self.randoms[label] = self.randoms[w] * x[i]*x[j] /(x[0]**2 + x[1]**2 + x[2]**2)
-                Fij[label] = self.randoms.to_mesh(value=label, **mesh_kwargs).paint(mode='complex')
+        print('Computing 4th order moments')
+        for (i,i_label),(j,j_label),(k,k_label),(l,l_label) in tqdm(itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=4), total=num_ffts(4)):
+            label = 'W' + W + i_label + j_label + k_label + l_label
+            self.randoms[label] = self.randoms[f'W{W}'] * x[i]*x[j]*x[k]*x[l] /(x[0]**2 + x[1]**2 + x[2]**2)**2
+            self._W[label[1:]] = self._format_fft(self.randoms.to_mesh(value=label, **mesh_kwargs).paint(mode='complex'), W)
 
-            print('Computing 4th order moments')
-            for (i,i_label),(j,j_label),(k,k_label),(l,l_label) in tqdm(itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=4), total=num_ffts(4)):
-                label = w + i_label + j_label + k_label + l_label
-                self.randoms[label] = self.randoms[w] * x[i]*x[j]*x[k]*x[l] /(x[0]**2 + x[1]**2 + x[2]**2)**2
-                Fij[label] = self.randoms.to_mesh(value=label, **mesh_kwargs).paint(mode='complex')
-
-        self._W = {k[1:]: self._format_fft(Fij[k], k[:3]) for k in Fij.keys()}
+    def compute_cartesian_ffts(self, Wij=('W12', 'W22'), tqdm=tqdm):
+        if not hasattr(self, '_W'):
+            self._W = {}
+        for W in Wij:
+            self.compute_cartesian_fft(W.replace('W',''), tqdm=tqdm)
 
     def save_cartesian_ffts(self, filename):
         np.savez(filename if filename.strip()[-4:] == '.npz' else filename + '.npz',
-                 **{f'W{k}': self.W[k] for k in self.W.keys()},
-                 **{f'I{k}': self.I[k] for k in self.I.keys()},
+                 **{f'W{k.replace("W","")}': self._W[k] for k in self._W.keys()},
+                 **{f'I{k.replace("I","")}': self.I[k] for k in self.I.keys()},
                  BoxSize=self.BoxSize,
                  Nmesh=self.Nmesh,
                  alpha=self.alpha)
@@ -253,6 +254,15 @@ class GaussianSurveyWindowCovariance(PowerMultipoleCovariance):
             self.Nmesh   = data['Nmesh']
             self.alpha   = data['alpha']
 
+            self._mesh_kwargs = {
+                'Nmesh':       self.Nmesh,
+                'BoxSize':     self.BoxSize,
+                'interlaced':  True,
+                'compensated': True,
+                'resampler':   'tsc',
+            }
+
+
     def compute_window_kernels(self, kmodes_sampled, icut, tqdm=tqdm):
         # As the window falls steeply with k, only low-k regions are needed for the calculation.
         # Therefore, cutting out the high-k modes in the FFTs using the icut parameter
@@ -261,7 +271,7 @@ class GaussianSurveyWindowCovariance(PowerMultipoleCovariance):
                            W.shape[1]//2-icut-1 : W.shape[1]//2+icut,
                            W.shape[2]//2-icut-1 : W.shape[2]//2+icut]
 
-        self._Wcut = {key: cutW(self.W[key]) for key in self.W.keys()}
+        self._Wcut = {key: cutW(self.W(key)) for key in self._W.keys() if '12' in key or '22' in key}
 
         kBinWidth = self._dk
         nBins = self.kbins
@@ -644,13 +654,27 @@ class GaussianSurveyWindowCovariance(PowerMultipoleCovariance):
 
         return fft.fftshift(fourier_full)[::-1,::-1,::-1] * self.ngals
 
+    def _unformat_fft(self, fourier, window):
+
+        # PFFT omits modes that are determined by the Hermitian condition. Adding them:
+        fourier_cut = fft.ifftshift(fourier[::-1,::-1,::-1])[:,:,:fourier.shape[2]//2+1] / self.ngals
+
+        if window == 'W12':
+            return np.conj(fourier_cut)
+        else:
+            return fourier_cut
+
     @property
     def I(self):
         return self._I
 
-    @property
-    def W(self):
-        return self._W
+    def W(self, W):
+        w = W.replace("W","")
+        if w not in self._W.keys():
+            print(f'Keys available: {self._W.keys()}')
+            print(f'{w} not found. Computing.')
+            self.compute_cartesian_fft(w.replace("x","").replace("y","").replace("z",""))
+        return self._W[w]
 
     @property
     def randoms(self):
@@ -765,21 +789,67 @@ class TrispectrumSurveyWindowCovariance(PowerMultipoleCovariance):
 
         trisp = np.vectorize(self._trispectrum_element)
 
-        covaT0mult = np.zeros(2*[3*kbins])
+        covariance = np.zeros(2*[3*kbins])
 
         for i in tqdm(range(kbins), total=kbins, desc="Computing trispectrum contribution"):
-            covaT0mult[i,        :  kbins] = trisp(0, 0, k[i], k)
-            covaT0mult[i,   kbins:2*kbins] = trisp(0, 2, k[i], k)
-            covaT0mult[i, 2*kbins:3*kbins] = trisp(0, 4, k[i], k)
+            covariance[i,        :  kbins] = trisp(0, 0, k[i], k)
+            covariance[i,   kbins:2*kbins] = trisp(0, 2, k[i], k)
+            covariance[i, 2*kbins:3*kbins] = trisp(0, 4, k[i], k)
             
-            covaT0mult[kbins+i,   kbins:2*kbins] = trisp(2, 2, k[i], k)
-            covaT0mult[kbins+i, 2*kbins:3*kbins] = trisp(2, 4, k[i], k)
+            covariance[kbins+i,   kbins:2*kbins] = trisp(2, 2, k[i], k)
+            covariance[kbins+i, 2*kbins:3*kbins] = trisp(2, 4, k[i], k)
 
-            covaT0mult[2*kbins+i, 2*kbins:3*kbins] = trisp(4, 4, k[i], k)
+            covariance[2*kbins+i, 2*kbins:3*kbins] = trisp(4, 4, k[i], k)
 
-        covaT0mult[kbins:, :kbins] = np.transpose(covaT0mult[:kbins, kbins:])
+        covariance[kbins:, :kbins] = np.transpose(covariance[:kbins, kbins:])
 
-        self._covariance = covaT0mult
+        self._covariance = covariance
+
+    @property
+    def I(self):
+        return self._gaussian_cov.I
+
+
+class SuperSampleCovariance(PowerMultipoleCovariance):
+
+    def __init__(self, gaussian_cov=None):
+        super().__init__()
+        self._covariance = None
+        self.T0 = None
+        self.Plin = None
+
+        self._gaussian_cov = gaussian_cov
+
+    def set_bias_parameters(self, b1, be, g2, b2, g3, g2x, g21, b3):
+        self.T0 = Trispectrum.T0(b1, be, g2, b2, g3, g2x, g21, b3)
+
+    def load_Plin(self, k, P):
+        self.Plin = interpolate.InterpolatedUnivariateSpline(k, P)
+
+   
+
+    def compute_covariance(self, tqdm=tqdm):
+
+        kbins = self._gaussian_cov.kbins
+        k = self._gaussian_cov.k
+
+        trisp = np.vectorize(self._trispectrum_element)
+
+        covariance = np.zeros(2*[3*kbins])
+
+        for i in tqdm(range(kbins), total=kbins, desc="Computing trispectrum contribution"):
+            covariance[i,        :  kbins] = trisp(0, 0, k[i], k)
+            covariance[i,   kbins:2*kbins] = trisp(0, 2, k[i], k)
+            covariance[i, 2*kbins:3*kbins] = trisp(0, 4, k[i], k)
+            
+            covariance[kbins+i,   kbins:2*kbins] = trisp(2, 2, k[i], k)
+            covariance[kbins+i, 2*kbins:3*kbins] = trisp(2, 4, k[i], k)
+
+            covariance[2*kbins+i, 2*kbins:3*kbins] = trisp(4, 4, k[i], k)
+
+        covariance[kbins:, :kbins] = np.transpose(covariance[:kbins, kbins:])
+
+        self._covariance = covariance
 
     @property
     def I(self):
