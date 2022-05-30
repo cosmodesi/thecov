@@ -649,7 +649,7 @@ class GaussianSurveyWindowCovariance(PowerMultipoleCovariance):
         # PFFT omits modes that are determined by the Hermitian condition. Adding them:
         fourier_full = utils.r2c_to_c2c_3d(fourier)
 
-        if window == 'W12':
+        if window == '12':
             fourier_full = np.conj(fourier_full)
 
         return fft.fftshift(fourier_full)[::-1,::-1,::-1] * self.ngals
@@ -659,7 +659,7 @@ class GaussianSurveyWindowCovariance(PowerMultipoleCovariance):
         # PFFT omits modes that are determined by the Hermitian condition. Adding them:
         fourier_cut = fft.ifftshift(fourier[::-1,::-1,::-1])[:,:,:fourier.shape[2]//2+1] / self.ngals
 
-        if window == 'W12':
+        if window == '12':
             return np.conj(fourier_cut)
         else:
             return fourier_cut
