@@ -10,7 +10,7 @@ from scipy import integrate
 
 from tqdm import tqdm
 
-from . import Trispectrum, utils
+from . import trispectrum, utils
 
 
 class Covariance():
