@@ -21,6 +21,25 @@ class T0:
         self.l1 = None
         self.l2 = None
 
+    def Z12Kernel(self, l, mu, dlnpk):
+
+        b1, b2, be, g2 = self.b1, self.b2, self.be, self.g2
+
+        if   l == 0:
+            return (7*b1**2*be*(70 + 42*be + (-35*(-3 + dlnpk) + 3*be*(28 + 13*be - 14*dlnpk - 5*be*dlnpk))*mu**2) + 
+                b1*(35*(47 - 7*dlnpk) + be*(798 + 153*be - 98*dlnpk - 21*be*dlnpk + 
+                4*(84 + be*(48 - 21*dlnpk) - 49*dlnpk)*mu**2)) + 
+                98*(5*b2*(3 + be) + 4*g2*(-5 + be*(-2 + mu**2))))/(735.*b1**2)
+        elif l == 2:
+            return (14*b1**2*be*(14 + 12*be + (2*be*(12 + 7*be) - (1 + be)*(7 + 5*be)*dlnpk)*mu**2) + 
+                    b1*(4*be*(69 + 19*be) - 7*be*(2 + be)*dlnpk + 
+                    (24*be*(11 + 6*be) - 7*(21 + be*(22 + 9*be))*dlnpk)*mu**2 + 7*(-8 + 7*dlnpk + 24*mu**2)) + 
+                    28*(7*b2*be + g2*(-7 - 13*be + (21 + 11*be)*mu**2)))/(147.*b1**2)
+        elif l == 4:
+            return (8*be*(b1*(-132 + 77*dlnpk + be*(23 + 154*b1 + 14*dlnpk)) - 154*g2 + 
+                    (b1*(396 - 231*dlnpk + be*(272 + 308*b1 + 343*b1*be - 7*(17 + b1*(22 + 15*be))*dlnpk)) + 
+                    462*g2)*mu**2))/(2695.*b1**2)
+
     # Shot noise term in Eq. 92
     def e24o44(self, u12, k1, k2):
 

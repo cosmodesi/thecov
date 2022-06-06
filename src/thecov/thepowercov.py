@@ -4,14 +4,246 @@ import itertools as itt
 
 import numpy as np
 import dask.array as da
-from scipy import fft
-from scipy import interpolate
-from scipy import integrate
+from scipy import fft, interpolate, integrate, special
 
 from tqdm import tqdm
 
 from . import trispectrum, utils
 
+
+class SurveyWindow:
+
+    def __init__(self, random_catalog, Nmesh=None, BoxSize=None, alpha=None, tqdm=None, mesh_kwargs=None):
+
+        if Nmesh:   self.Nmesh   = Nmesh
+        if BoxSize: self.BoxSize = BoxSize
+        if alpha:   self.alpha   = alpha
+        if tqdm:    self.tqdm    = tqdm
+        else: tqdm = lambda x:x
+
+        self._mesh_kwargs = {
+            'Nmesh':       self.Nmesh,
+            'BoxSize':     self.BoxSize,
+            'interlaced':  True,
+            'compensated': True,
+            'resampler':   'tsc',
+        }
+
+        if mesh_kwargs is not None:
+            self._mesh_kwargs.update(mesh_kwargs)
+
+        self._randoms = random_catalog
+
+        self.randoms['RelativePosition'] = self.randoms['Position']
+        self.randoms['Position'] += da.array(3*[self.BoxSize/2])
+
+        self.ngals = self.randoms.size * self.alpha
+
+        self._W = {}
+        self._I = {}
+        for i,j in ['22', '11', '12', '10', '24', '14', '34', '44', '32']:
+            self.randoms[f'W{i}{j}'] = self.randoms['NZ']**(int(i)-1) * self.randoms['WEIGHT_FKP']**int(j)
+            # Computing I_ij integrals
+            self._I[f'{i}{j}'] = (self.randoms[f'W{i}{j}'].sum() * self.alpha).compute()
+
+    def compute_cartesian_fft(self, W):
+        num_ffts = lambda l: (l+1)*(l+2)/2
+
+        mesh_kwargs = self._mesh_kwargs
+
+        x = self.randoms['RelativePosition'].T
+
+        print(f'Computing moments of W{W}')
+
+        print('Computing 0th order moment...', end='')
+        self._W[W] = self._format_fft(self.randoms.to_mesh(value=f'W{W}', **mesh_kwargs).paint(mode='complex'), W)
+        print(' Done!')
+
+        print('Computing 2nd order moments')
+        for (i,i_label),(j,j_label) in self.tqdm(itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=2), total=num_ffts(2)):
+            label = 'W' + W + i_label + j_label
+            self.randoms[label] = self.randoms[f'W{W}'] * x[i]*x[j] /(x[0]**2 + x[1]**2 + x[2]**2)
+            self._W[label[1:]] = self._format_fft(self.randoms.to_mesh(value=label, **mesh_kwargs).paint(mode='complex'), W)
+
+        print('Computing 4th order moments')
+        for (i,i_label),(j,j_label),(k,k_label),(l,l_label) in self.tqdm(itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=4), total=num_ffts(4)):
+            label = 'W' + W + i_label + j_label + k_label + l_label
+            self.randoms[label] = self.randoms[f'W{W}'] * x[i]*x[j]*x[k]*x[l] /(x[0]**2 + x[1]**2 + x[2]**2)**2
+            self._W[label[1:]] = self._format_fft(self.randoms.to_mesh(value=label, **mesh_kwargs).paint(mode='complex'), W)
+
+    def compute_cartesian_ffts(self, Wij=('W12', 'W22')):
+        if not hasattr(self, '_W'):
+            self._W = {}
+        for W in Wij:
+            self.compute_cartesian_fft(W.replace('W',''))
+
+    def save_cartesian_ffts(self, filename):
+        np.savez(filename if filename.strip()[-4:] == '.npz' else filename + '.npz',
+                 **{f'W{k.replace("W","")}': self._W[k] for k in self._W.keys()},
+                 **{f'I{k.replace("I","")}': self.I[k] for k in self.I.keys()},
+                 BoxSize=self.BoxSize,
+                 Nmesh=self.Nmesh,
+                 alpha=self.alpha)
+
+    def load_cartesian_ffts(self, filename):
+        with np.load(filename, mmap_mode='r') as data:
+            self._W = {f[1:]: data[f] for f in data.files if f[0] == 'W' }
+            self._I = {f[1:]: data[f] for f in data.files if f[0] == 'I' }
+
+            self.BoxSize = data['BoxSize']
+            self.Nmesh   = data['Nmesh']
+            self.alpha   = data['alpha']
+
+            self._mesh_kwargs = {
+                'Nmesh':       self.Nmesh,
+                'BoxSize':     self.BoxSize,
+                'interlaced':  True,
+                'compensated': True,
+                'resampler':   'tsc',
+            }
+
+    def _format_fft(self, fourier, window):
+
+        # PFFT omits modes that are determined by the Hermitian condition. Adding them:
+        fourier_full = utils.r2c_to_c2c_3d(fourier)
+
+        if window == '12':
+            fourier_full = np.conj(fourier_full)
+
+        return fft.fftshift(fourier_full)[::-1,::-1,::-1] * self.ngals
+
+    def _unformat_fft(self, fourier, window):
+
+        # PFFT omits modes that are determined by the Hermitian condition. Adding them:
+        fourier_cut = fft.ifftshift(fourier[::-1,::-1,::-1])[:,:,:fourier.shape[2]//2+1] / self.ngals
+
+        if window == '12':
+            return np.conj(fourier_cut)
+        else:
+            return fourier_cut
+
+    @property
+    def I(self):
+        return self._I
+
+    def W(self, W):
+        w = W.replace("W","")
+        if w not in self._W.keys():
+            # print(f'Keys available: {self._W.keys()}')
+            print(f'W{w} not found. Computing.')
+            self.compute_cartesian_fft(w.replace("x","").replace("y","").replace("z",""))
+        return self._W[w]
+
+    @property
+    def randoms(self):
+        return self._randoms
+
+    def get_window_multipoles(self, window):
+        dk = 2*np.pi/self.BoxSize
+        Nmesh = self.Nmesh
+
+        kx, ky, kz = np.mgrid[-Nmesh//2:Nmesh//2, -Nmesh//2:Nmesh//2, -Nmesh//2:Nmesh//2] * dk
+        kmod = np.sqrt(kx**2 + ky**2 + kz**2)
+
+        kmod[Nmesh//2,Nmesh//2,Nmesh//2] = np.inf # 0th mode
+        khx, khy, khz = kx/kmod, ky/kmod, kz/kmod
+        kmod[Nmesh//2,Nmesh//2,Nmesh//2] = 0. # 0th mode
+
+        W_L0 = self.W(window).copy()
+
+        W_L2 = \
+            self.W(f'{window}xx') * 3*khx**2/2 + \
+            self.W(f'{window}xy') * 3*khx*khy + \
+            self.W(f'{window}xz') * 3*khx*khz + \
+            self.W(f'{window}yy') * 3*khy**2/2 + \
+            self.W(f'{window}yz') * 3*khy*khz + \
+            self.W(f'{window}zz') * 3*khz**2/2 + \
+            self.W(window) * -1/2
+
+        W_L4 = \
+            self.W(f'{window}xxxx') * 35*khx**4/8 + \
+            self.W(f'{window}xxxy') * 35*khx**3*khy/2 + \
+            self.W(f'{window}xxxz') * 35*khx**3*khz/2 + \
+            self.W(f'{window}xxyy') * 105*khx**2*khy**2/4 + \
+            self.W(f'{window}xxyz') * 105*khx**2*khy*khz/2 + \
+            self.W(f'{window}xxzz') * 105*khx**2*khz**2/4 + \
+            self.W(f'{window}xyyy') * 35*khx*khy**3/2 + \
+            self.W(f'{window}xyyz') * 105*khx*khy**2*khz/2 + \
+            self.W(f'{window}xyzz') * 105*khx*khy*khz**2/2 + \
+            self.W(f'{window}xzzz') * 35*khx*khz**3/2 + \
+            self.W(f'{window}yyyy') * 35*khy**4/8 + \
+            self.W(f'{window}yyyz') * 35*khy**3*khz/2 + \
+            self.W(f'{window}yyzz') * 105*khy**2*khz**2/4 + \
+            self.W(f'{window}yzzz') * 35*khy*khz**3/2 + \
+            self.W(f'{window}zzzz') * 35*khz**4/8 + \
+            self.W(f'{window}xx') * -15*khx**2/4 + \
+            self.W(f'{window}xy') * -15*khx*khy/2 + \
+            self.W(f'{window}xz') * -15*khx*khz/2 + \
+            self.W(f'{window}yy') * -15*khy**2/4 + \
+            self.W(f'{window}yz') * -15*khy*khz/2 + \
+            self.W(f'{window}zz') * -15*khz**2/4 + \
+            self.W(window) * 3/8
+        
+        return W_L0, W_L2, W_L4
+
+    def compute_power_multipoles(self):
+        dk = 2*np.pi/self.BoxSize
+        Nmesh = self.Nmesh
+
+        kx, ky, kz = np.mgrid[-Nmesh//2:Nmesh//2, -Nmesh//2:Nmesh//2, -Nmesh//2:Nmesh//2] * dk
+        kmod = np.sqrt(kx**2 + ky**2 + kz**2)
+
+        kmin = 0.
+        kmax = (self.Nmesh + 1) * dk/2
+
+        # central k
+        k = np.arange(kmin + dk/2, kmax + dk/2, dk)
+
+        kedges = np.arange(kmin, kmax + dk, dk)
+
+        kbin = np.digitize(kmod, kedges) - 1
+
+        kmean = np.array([np.average(kmod[kbin == i]) for i,_ in enumerate(k)])
+        # kmean = 3/4*((k+dk/2)**4 - (k-dk/2)**4)/((k+dk/2)**3 - (k-dk/2)**3)
+
+        W10_L0, W10_L2, W10_L4 = self.get_window_multipoles('W10')
+        W22_L0, W22_L2, W22_L4 = self.get_window_multipoles('W22')
+
+        def compute_power(A, B=None):
+            if B is None:
+                B = A
+
+            integrand = np.real(A * np.conj(B))
+            
+            return np.array([np.average(integrand[kbin == i]) for i,_ in enumerate(k)])
+
+        powerW22 = {(l1,l2): (2*l1+1)*(2*l2+1)*compute_power(W1, W2)/self.I['22']**2 \
+            for (l1,W1), (l2,W2) in itt.combinations_with_replacement(utils.enum2([W22_L0, W22_L2, W22_L4]), 2)}
+
+        powerW10 = {(l1,l2): (2*l1+1)*(2*l2+1)*compute_power(W1, W2)/self.I['10']**2 \
+            for (l1,W1), (l2,W2) in itt.combinations_with_replacement(utils.enum2([W10_L0, W10_L2, W10_L4]), 2)}
+
+        powerW22xW10 = {(l1,l2): (2*l1+1)*(2*l2+1)*compute_power(W1, W2)/self.I['22']/self.I['10'] \
+            for (l1,W1), (l2,W2) in itt.product(utils.enum2([W22_L0, W22_L2, W22_L4]),
+                                                utils.enum2([W10_L0, W10_L2, W10_L4]))}
+
+        # subtracting shot noise
+        powerW22[0,0]     -= self.alpha*self.I['34']/self.I['22']**2
+        powerW10[0,0]     -= self.alpha/self.I['10']
+        powerW22xW10[0,0] -= self.alpha/self.I['10']
+
+        if kmin == 0:
+            # manually setting k = 0 values
+            for l1,l2 in powerW10.keys():
+                powerW10[l1,l2][0] = 1. if l1 == l2 else 0.
+
+            for l1,l2 in powerW22.keys():
+                powerW22[l1,l2][0] = 1. if l1 == l2 else 0.
+
+            for l1,l2 in powerW22xW10.keys():
+                powerW22xW10[l1,l2][0] = 1. if l1 == l2 else 0.
+        
+        return kmean, powerW10, powerW22, powerW22xW10
 
 class Covariance():
 
@@ -75,6 +307,7 @@ class PowerCovariance(Covariance):
         self._kmax = kmax
         self._kmin = kmin
         self._k = np.arange(kmin+dk/2, kmax+dk/2, dk)
+        self._kedges = np.arange(kmin, kmax+dk, dk)
 
     @property
     def kbins(self):
@@ -745,7 +978,7 @@ class TrispectrumSurveyWindowCovariance(PowerMultipoleCovariance):
         self._gaussian_cov = gaussian_cov
 
     def set_bias_parameters(self, b1, be, g2, b2, g3, g2x, g21, b3):
-        self.T0 = Trispectrum.T0(b1, be, g2, b2, g3, g2x, g21, b3)
+        self.T0 = trispectrum.T0(b1, be, g2, b2, g3, g2x, g21, b3)
 
     def load_Plin(self, k, P):
         self.Plin = interpolate.InterpolatedUnivariateSpline(k, P)
@@ -812,45 +1045,130 @@ class TrispectrumSurveyWindowCovariance(PowerMultipoleCovariance):
 
 class SuperSampleCovariance(PowerMultipoleCovariance):
 
-    def __init__(self, gaussian_cov=None):
+    def __init__(self, survey_geometry, gaussian_cov):
         super().__init__()
         self._covariance = None
         self.T0 = None
         self.Plin = None
 
+        self._survey_geometry = survey_geometry
+
         self._gaussian_cov = gaussian_cov
 
     def set_bias_parameters(self, b1, be, g2, b2, g3, g2x, g21, b3):
-        self.T0 = Trispectrum.T0(b1, be, g2, b2, g3, g2x, g21, b3)
+        self.T0 = trispectrum.T0(b1, be, g2, b2, g3, g2x, g21, b3)
 
     def load_Plin(self, k, P):
         self.Plin = interpolate.InterpolatedUnivariateSpline(k, P)
 
-   
-
-    def compute_covariance(self, tqdm=tqdm):
-
-        kbins = self._gaussian_cov.kbins
-        k = self._gaussian_cov.k
-
-        trisp = np.vectorize(self._trispectrum_element)
-
-        covariance = np.zeros(2*[3*kbins])
-
-        for i in tqdm(range(kbins), total=kbins, desc="Computing trispectrum contribution"):
-            covariance[i,        :  kbins] = trisp(0, 0, k[i], k)
-            covariance[i,   kbins:2*kbins] = trisp(0, 2, k[i], k)
-            covariance[i, 2*kbins:3*kbins] = trisp(0, 4, k[i], k)
-            
-            covariance[kbins+i,   kbins:2*kbins] = trisp(2, 2, k[i], k)
-            covariance[kbins+i, 2*kbins:3*kbins] = trisp(2, 4, k[i], k)
-
-            covariance[2*kbins+i, 2*kbins:3*kbins] = trisp(4, 4, k[i], k)
-
-        covariance[kbins:, :kbins] = np.transpose(covariance[:kbins, kbins:])
-
-        self._covariance = covariance
-
     @property
     def I(self):
         return self._gaussian_cov.I
+
+    def compute_sigma_factors(self):
+        Plin = self.Plin
+
+        # Calculating the RMS fluctuations of supersurvey modes 
+        #(e.g., sigma22Sq which was defined in Eq. (33) and later calculated in Eq.(65)
+
+        # kmin = 0.
+        # kmax = 0.25
+        # dk = 0.005
+        # k = np.arange(kmin + dk/2, kmax + dk/2, dk)
+        kmax = (self._survey_geometry.Nmesh + 1) * np.pi/self._survey_geometry.BoxSize
+
+        sigma22Sq = np.zeros((3,3))
+        sigma10Sq = np.zeros((3,3))
+        sigma22x10 = np.zeros((3,3))
+
+        kmean, powerW10, powerW22, powerW22xW10 = self._survey_geometry.compute_power_multipoles()
+
+        for (i,l1),(j,l2) in itt.product(enumerate((0,2,4)), repeat=2):
+            Pwin = interpolate.InterpolatedUnivariateSpline(kmean, powerW22xW10[l1,l2])
+            sigma22x10[i,j] = integrate.quad(lambda q: q**2*Plin(q)*Pwin(q)/2/np.pi**2, 0, kmax)[0]
+            
+        for (i,l1),(j,l2) in itt.combinations_with_replacement(enumerate((0,2,4)), 2):
+            Pwin = interpolate.InterpolatedUnivariateSpline(kmean, powerW22[l1,l2])
+            sigma22Sq[i,j] = integrate.quad(lambda q: q**2*Plin(q)*Pwin(q)/2/np.pi**2, 0, kmax)[0]
+            sigma22Sq[j,i] = sigma22Sq[i,j]
+
+            Pwin = interpolate.InterpolatedUnivariateSpline(kmean,  powerW10[l1,l2])
+            sigma10Sq[i,j] = integrate.quad(lambda q: q**2*Plin(q)*Pwin(q)/2/np.pi**2, 0, kmax)[0]
+            sigma10Sq[j,i] = sigma10Sq[i,j]
+
+        return sigma10Sq, sigma22Sq, sigma22x10
+
+    def compute_covariance(self):
+        Plin = self.Plin
+        kbins = self._gaussian_cov.kbins
+        k = self._gaussian_cov.k
+
+        sigma10Sq, sigma22Sq, sigma22x10 = self.compute_sigma_factors()
+
+        # Derivative of the linear power spectrum
+        dlnPk = Plin.derivative()(k)*k/Plin(k)
+
+        # Kaiser terms
+        rsd = {
+            0: 1 + (2*self.T0.be)/3 + self.T0.be**2/5,
+            2: (4*self.T0.be)/3 + (4*self.T0.be**2)/7,
+            4: (8*self.T0.be**2)/35
+        }
+
+        # Legendre polynomials
+        def lp(l, mu):
+            if l==0: return 1
+            if l==2: return (3*mu**2 - 1)/2.
+            if l==4: return (35*mu**4 - 30*mu**2 + 3)/8.
+
+        # Calculating multipoles of the Z12 kernel
+        def Z12Multipoles(i, l, dlnpk):
+            return integrate.quad(lambda mu: lp(i, mu)*self.T0.Z12Kernel(l, mu, dlnpk), -1, 1)[0]
+
+        Z12Multipoles = np.vectorize(Z12Multipoles)
+
+        b1 = self.T0.b1
+        b2 = self.T0.b2
+        be = self.T0.be
+
+        I = self._survey_geometry.I
+
+        # Terms used in the LA calculation
+        covaLAterm = np.zeros((3,len(k)))
+        for l,i,j in itt.product(range(3), repeat=3):
+            covaLAterm[l] += 1/4.*sigma22x10[i,j]*Z12Multipoles(2*i,2*l,dlnPk) \
+                                *integrate.quad(lambda mu: lp(2*j,mu)*(1 + be*mu**2), -1, 1)[0]
+        covaBC = {}
+        covaLA = {}
+        for l1,l2 in itt.combinations_with_replacement([0,2,4], 2):
+            covaBC[l1,l2] = np.zeros((len(k),len(k)))
+            for i,j in itt.product(range(3), repeat=2):
+                covaBC[l1,l2] += 1/4.*sigma22Sq[i,j]*np.outer(Plin(k)*Z12Multipoles(2*i,l1,dlnPk),
+                                                    Plin(k)*Z12Multipoles(2*j,l2,dlnPk))
+
+            covaLA[l1,l2] = -rsd[l2]*np.outer(Plin(k)*(covaLAterm[int(l1/2)] + I['32']/I['22']/I['10']*rsd[l1]*Plin(k)*b2/b1**2+2/I['10']*rsd[l1]), Plin(k)) \
+                    - rsd[l1]*np.outer(Plin(k), Plin(k)*(covaLAterm[int(l2/2)] + I['32']/I['22']/I['10']*rsd[l2]*Plin(k)*b2/b1**2+2/I['10']*rsd[l2])) \
+                    + sigma10Sq[0,0]*rsd[l1]*rsd[l2]*np.outer(Plin(k),Plin(k))
+
+
+        self.covaBC = {
+            key: Covariance(covaBC[key]) for key in covaBC.keys()
+        }
+
+        self.covaLA = {
+            key: Covariance(covaLA[key]) for key in covaBC.keys()
+        }
+    
+        self._multipole_covariance = {
+            key: Covariance(covaLA[key] + covaBC[key]) for key in covaBC.keys()
+        }
+
+        covariance = np.zeros(2*[3*kbins])
+
+        C = self._multipole_covariance
+
+        self._covariance = np.block([
+            [C[0,0].cov, C[0,2].cov, C[0,4].cov],
+            [C[0,2].cov, C[2,2].cov, C[2,4].cov],
+            [C[0,4].cov, C[2,4].cov, C[4,4].cov],
+        ])

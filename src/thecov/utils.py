@@ -15,3 +15,9 @@ def triangle_cov(upper, lower, diagonal='upper'):
     cov = np.triu(upper) + np.tril(lower)
     cov -= np.diag(np.diag(upper if diagonal == 'lower' else lower))
     return cov
+    
+# python's enumerate but with a custom step = 2
+def enum2(xs, start=0, step=2):
+    for x in xs:
+        yield (start, x)
+        start += step
