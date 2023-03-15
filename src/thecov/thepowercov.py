@@ -189,7 +189,7 @@ class SurveyWindow:
             self.W(f'{window}yz') * -15*khy*khz/2 + \
             self.W(f'{window}zz') * -15*khz**2/4 + \
             self.W(window) * 3/8
-        
+
         return W_L0, W_L2, W_L4
 
     def compute_power_multipoles(self):
@@ -222,7 +222,7 @@ class SurveyWindow:
                 B = A
 
             integrand = np.real(A * np.conj(B))
-            
+
             return np.array([np.average(integrand[kbin == i]) for i, _ in enumerate(k)])
 
         powerW22 = {(l1, l2): (2*l1+1)*(2*l2+1)*compute_power(W1, W2)/self.I['22']**2
@@ -233,7 +233,7 @@ class SurveyWindow:
 
         powerW22xW10 = {(l1, l2): (2*l1+1)*(2*l2+1)*compute_power(W1, W2)/self.I['22']/self.I['10']
                         for (l1, W1), (l2, W2) in itt.product(utils.enum2([W22_L0, W22_L2, W22_L4]),
-                                                utils.enum2([W10_L0, W10_L2, W10_L4]))}
+                                                              utils.enum2([W10_L0, W10_L2, W10_L4]))}
 
         # subtracting shot noise
         powerW22[0, 0] -= self.alpha*self.I['34']/self.I['22']**2
@@ -250,7 +250,7 @@ class SurveyWindow:
 
             for l1, l2 in powerW22xW10.keys():
                 powerW22xW10[l1, l2][0] = 1. if l1 == l2 else 0.
-        
+
         return kmean, powerW10, powerW22, powerW22xW10
 
 
@@ -347,7 +347,7 @@ class PowerMultipoleCovariance(PowerCovariance):
 
         self._multipole_covariance = None
         self._P = {}
-        
+
     def load_multipole(self, k, P_ell, ell):
         self._P[ell] = interpolate.InterpolatedUnivariateSpline(k, P_ell)
 
@@ -559,57 +559,33 @@ class GaussianSurveyWindowCovariance(PowerMultipoleCovariance):
         self._Wcut = {key: cutW(self.W(key))
                       for key in self._W.keys() if '12' in key or '22' in key}
 
-        nBins = self.kmid
-        kBinWidth = self.dk
+        kmid = self.kmid
+        dk = self.dk
         kfun = 2*np.pi/self.BoxSize
 
         # Recording the k-modes in different shells
         # Bin_kmodes contains [kx,ky,kz,radius] values of all the modes in the bin
 
-        nk = int(kBinWidth*nBins/kfun)+1
-
-        ix, iy, iz = np.mgrid[-nk:nk+1,
-                              -nk:nk+1,
-                              -nk:nk+1]
-
-        rk = np.sqrt(ix**2 + iy**2 + iz**2)
-
-        Bin_ModeNum = np.zeros(nBins,dtype=int)
-
-        Bin_kmodes = []
-        for i in range(nBins):
-            Bin_kmodes.append([])
-
-        sort = (rk*kfun/kBinWidth).astype(int)
-
-        for i in tqdm(range(nBins), desc="Sorting k-modes in shells"):
-            ind = (sort == i)
-            Bin_ModeNum[i] = len(ix[ind])
-            Bin_kmodes[i] = np.hstack((ix[ind].reshape(-1,1),
-                                       iy[ind].reshape(-1,1),
-                                       iz[ind].reshape(-1,1),
-                                       rk[ind].reshape(-1,1)))
-
-        self._Bin_ModeNum = Bin_ModeNum
-        self._Bin_kmodes = Bin_kmodes
+        self._kmodes = np.array([[utils.sample_from_shell((k - dk/2)/kfun, (k + dk/2)/kfun) for _ in range(kmodes_sampled)] for k in kmid])
 
         self.WinKernel = np.array([
-            self._compute_window_kernel_row(Nbin, kmodes_sampled=kmodes_sampled, icut=icut, tqdm=tqdm)
-                          for Nbin, _ in tqdm(enumerate(self._k), total=self.kbins, desc="Computing window kernels")])
+            self._compute_window_kernel_row(
+                Nbin, icut=icut, tqdm=tqdm)
+            for Nbin in tqdm(range(self.kbins), total=self.kbins, desc="Computing window kernels")])
 
     def save_window_kernels(self, filename):
-        np.savez(filename if filename.strip()[-4:] == '.npz' else filename + '.npz',
-                 WinKernel=self.WinKernel)
+        np.savez(filename if filename.strip()
+                 [-4:] == '.npz' else f'{filename}.npz', WinKernel=self.WinKernel)
 
     def load_window_kernels(self, filename):
         with np.load(filename, mmap_mode='r') as data:
             self.WinKernel = data['WinKernel']
 
-    def _compute_window_kernel_row(self, Nbin, kmodes_sampled, icut, tqdm=tqdm):
+    def _compute_window_kernel_row(self, Nbin, icut, tqdm=tqdm):
         # Gives window kernels for L=0,2,4 auto and cross covariance (instead of only L=0 above)
 
-        # Returns an array with [7,15,6] dimensions. 
-        #    The first dim corresponds to the k-bin of k2 
+        # Returns an array with [7,15,6] dimensions.
+        #    The first dim corresponds to the k-bin of k2
         #    (only 3 bins on each side of diagonal are included as the Gaussian covariance drops quickly away from diagonal)
 
         #    The second dim corresponds to elements to be multiplied by various power spectrum multipoles
@@ -621,9 +597,10 @@ class GaussianSurveyWindowCovariance(PowerMultipoleCovariance):
 
         W = self._Wcut
 
-        Bin_ModeNum = self._Bin_ModeNum
-        Bin_kmodes = self._Bin_kmodes
-        kBinWidth = self._dk
+        Bin_ModeNum = self.nmodes
+        Bin_kmodes = self._kmodes
+
+        kBinWidth = self.dk
         nBins = self.kbins
         kfun = 2*np.pi/self.BoxSize
 
@@ -642,17 +619,11 @@ class GaussianSurveyWindowCovariance(PowerMultipoleCovariance):
         k2yh = np.zeros_like(iiy)
         k2zh = np.zeros_like(iiz)
 
-        if (kmodes_sampled < Bin_ModeNum[Nbin]):
-            norm = kmodes_sampled
-            sampled = (np.random.rand(kmodes_sampled)*Bin_ModeNum[Nbin]).astype(int)
-        else:
-            norm = Bin_ModeNum[Nbin]
-            sampled = np.arange(Bin_ModeNum[Nbin], dtype=int)
+        kmodes_sampled = len(Bin_kmodes[Nbin])
 
         # Randomly select a mode in the k1 bin
         # for n in tqdm(sampled, leave=False, desc=f"Row {Nbin}"):
-        for n in sampled:
-            ik1x, ik1y, ik1z, rk1 = Bin_kmodes[Nbin][n]
+        for ik1x, ik1y, ik1z, rk1 in Bin_kmodes[Nbin]:
 
             if rk1 == 0.:
                 k1xh = 0
@@ -663,14 +634,15 @@ class GaussianSurveyWindowCovariance(PowerMultipoleCovariance):
                 k1yh = ik1y/rk1
                 k1zh = ik1z/rk1
 
-            # Build a 3D array of modes around the selected mode   
+            # Build a 3D array of modes around the selected mode
             k2xh = ik1x-iix
             k2yh = ik1y-iiy
             k2zh = ik1z-iiz
 
             rk2 = np.sqrt(k2xh**2 + k2yh**2 + k2zh**2)
 
-            sort = (rk2*kfun/kBinWidth).astype(int) - Nbin # to decide later which shell the k2 mode belongs to
+            # to decide later which shell the k2 mode belongs to
+            sort = (rk2*kfun/kBinWidth).astype(int) - Nbin
             ind = (rk2 == 0)
             if ind.any() > 0:
                 rk2[ind] = 1e10
@@ -678,7 +650,7 @@ class GaussianSurveyWindowCovariance(PowerMultipoleCovariance):
             k2xh /= rk2
             k2yh /= rk2
             k2zh /= rk2
-            #k2 hat arrays built
+            # k2 hat arrays built
 
             # Now calculating window multipole kernels by taking dot products of cartesian FFTs with k1-hat, k2-hat arrays
             # W corresponds to W22(k) and Wc corresponds to conjugate of W22(k)
@@ -703,23 +675,23 @@ class GaussianSurveyWindowCovariance(PowerMultipoleCovariance):
                              k1zh**3*k1xh + 4.*W['22yzzz']*k1zh**3*k1yh
                              + 6.*W['22xxyy']*k1xh**2*k1yh**2 + 6.*W['22xxzz'] *
                              k1xh**2*k1zh**2 + 6.*W['22yyzz']*k1yh**2*k1zh**2
-                       + 12.*W['22xxyz']*k1xh**2*k1yh*k1zh + 12.*W['22xyyz']*k1yh**2*k1xh*k1zh + 12.*W['22xyzz']*k1zh**2*k1xh*k1yh) \
+                             + 12.*W['22xxyz']*k1xh**2*k1yh*k1zh + 12.*W['22xyyz']*k1yh**2*k1xh*k1zh + 12.*W['22xyzz']*k1zh**2*k1xh*k1yh) \
                 - 5./2.*W_k1L2 - 7./8.*W_L0
 
             Wc_k1L4 = np.conj(W_k1L4)
 
             k1k2 = W['22xxxx']*(k1xh*k2xh)**2 + W['22yyyy']*(k1yh*k2yh)**2+W['22zzzz']*(k1zh*k2zh)**2 \
-                 + W['22xxxy']*(k1xh*k1yh*k2xh**2 + k1xh**2*k2xh*k2yh)*2 \
-                 + W['22xxxz']*(k1xh*k1zh*k2xh**2 + k1xh**2*k2xh*k2zh)*2 \
-                 + W['22yyyz']*(k1yh*k1zh*k2yh**2 + k1yh**2*k2yh*k2zh)*2 \
-                 + W['22yzzz']*(k1zh*k1yh*k2zh**2 + k1zh**2*k2zh*k2yh)*2 \
-                 + W['22xyyy']*(k1yh*k1xh*k2yh**2 + k1yh**2*k2yh*k2xh)*2 \
-                 + W['22xzzz']*(k1zh*k1xh*k2zh**2 + k1zh**2*k2zh*k2xh)*2 \
+                + W['22xxxy']*(k1xh*k1yh*k2xh**2 + k1xh**2*k2xh*k2yh)*2 \
+                + W['22xxxz']*(k1xh*k1zh*k2xh**2 + k1xh**2*k2xh*k2zh)*2 \
+                + W['22yyyz']*(k1yh*k1zh*k2yh**2 + k1yh**2*k2yh*k2zh)*2 \
+                + W['22yzzz']*(k1zh*k1yh*k2zh**2 + k1zh**2*k2zh*k2yh)*2 \
+                + W['22xyyy']*(k1yh*k1xh*k2yh**2 + k1yh**2*k2yh*k2xh)*2 \
+                + W['22xzzz']*(k1zh*k1xh*k2zh**2 + k1zh**2*k2zh*k2xh)*2 \
                 + W['22xxyy']*(k1xh**2*k2yh**2 + k1yh**2*k2xh**2 + 4.*k1xh*k1yh*k2xh*k2yh) \
                 + W['22xxzz']*(k1xh**2*k2zh**2 + k1zh**2*k2xh**2 + 4.*k1xh*k1zh*k2xh*k2zh) \
                 + W['22yyzz']*(k1yh**2*k2zh**2 + k1zh**2*k2yh**2 + 4.*k1yh*k1zh*k2yh*k2zh) \
-                 + W['22xyyz']*(k1xh*k1zh*k2yh**2 + k1yh**2*k2xh*k2zh + 2.*k1yh*k2yh*(k1zh*k2xh + k1xh*k2zh))*2 \
-                 + W['22xxyz']*(k1yh*k1zh*k2xh**2 + k1xh**2*k2yh*k2zh + 2.*k1xh*k2xh*(k1zh*k2yh + k1yh*k2zh))*2 \
+                + W['22xyyz']*(k1xh*k1zh*k2yh**2 + k1yh**2*k2xh*k2zh + 2.*k1yh*k2yh*(k1zh*k2xh + k1xh*k2zh))*2 \
+                + W['22xxyz']*(k1yh*k1zh*k2xh**2 + k1xh**2*k2yh*k2zh + 2.*k1xh*k2xh*(k1zh*k2yh + k1yh*k2zh))*2 \
                 + W['22xyzz']*(k1yh*k1xh*k2zh**2 + k1zh**2*k2yh *
                                k2xh + 2.*k1zh*k2zh*(k1xh*k2yh + k1yh*k2xh))*2
 
@@ -747,17 +719,17 @@ class GaussianSurveyWindowCovariance(PowerMultipoleCovariance):
             Wc_k1L4_k2L4 = np.conj(W_k1L4_k2L4)
 
             k1k2W12 = W['12xxxx']*(k1xh*k2xh)**2 + W['12yyyy']*(k1yh*k2yh)**2 + W['12zzzz']*(k1zh*k2zh)**2 \
-                    + W['12xxxy']*(k1xh*k1yh*k2xh**2 + k1xh**2*k2xh*k2yh)*2 \
-                    + W['12xxxz']*(k1xh*k1zh*k2xh**2 + k1xh**2*k2xh*k2zh)*2 \
-                    + W['12yyyz']*(k1yh*k1zh*k2yh**2 + k1yh**2*k2yh*k2zh)*2 \
-                    + W['12yzzz']*(k1zh*k1yh*k2zh**2 + k1zh**2*k2zh*k2yh)*2 \
-                    + W['12xyyy']*(k1yh*k1xh*k2yh**2 + k1yh**2*k2yh*k2xh)*2 \
-                    + W['12xzzz']*(k1zh*k1xh*k2zh**2 + k1zh**2*k2zh*k2xh)*2 \
+                + W['12xxxy']*(k1xh*k1yh*k2xh**2 + k1xh**2*k2xh*k2yh)*2 \
+                + W['12xxxz']*(k1xh*k1zh*k2xh**2 + k1xh**2*k2xh*k2zh)*2 \
+                + W['12yyyz']*(k1yh*k1zh*k2yh**2 + k1yh**2*k2yh*k2zh)*2 \
+                + W['12yzzz']*(k1zh*k1yh*k2zh**2 + k1zh**2*k2zh*k2yh)*2 \
+                + W['12xyyy']*(k1yh*k1xh*k2yh**2 + k1yh**2*k2yh*k2xh)*2 \
+                + W['12xzzz']*(k1zh*k1xh*k2zh**2 + k1zh**2*k2zh*k2xh)*2 \
                 + W['12xxyy']*(k1xh**2*k2yh**2 + k1yh**2*k2xh**2 + 4.*k1xh*k1yh*k2xh*k2yh) \
                 + W['12xxzz']*(k1xh**2*k2zh**2 + k1zh**2*k2xh**2 + 4.*k1xh*k1zh*k2xh*k2zh) \
                 + W['12yyzz']*(k1yh**2*k2zh**2 + k1zh**2*k2yh**2 + 4.*k1yh*k1zh*k2yh*k2zh) \
-                    + W['12xyyz']*(k1xh*k1zh*k2yh**2 + k1yh**2*k2xh*k2zh + 2.*k1yh*k2yh*(k1zh*k2xh + k1xh*k2zh))*2 \
-                    + W['12xxyz']*(k1yh*k1zh*k2xh**2 + k1xh**2*k2yh*k2zh + 2.*k1xh*k2xh*(k1zh*k2yh + k1yh*k2zh))*2 \
+                + W['12xyyz']*(k1xh*k1zh*k2yh**2 + k1yh**2*k2xh*k2zh + 2.*k1yh*k2yh*(k1zh*k2xh + k1xh*k2zh))*2 \
+                + W['12xxyz']*(k1yh*k1zh*k2xh**2 + k1xh**2*k2yh*k2zh + 2.*k1xh*k2xh*(k1zh*k2yh + k1yh*k2zh))*2 \
                 + W['12xyzz']*(k1yh*k1xh*k2zh**2 + k1zh**2*k2yh *
                                k2xh + 2.*k1zh*k2zh*(k1xh*k2yh + k1yh*k2xh))*2
 
@@ -772,14 +744,14 @@ class GaussianSurveyWindowCovariance(PowerMultipoleCovariance):
                                k1xh**3*k1zh + 4.*W['12xyyy']*k1yh**3*k1xh
                                + 6.*W['12xxyy']*k1xh**2*k1yh**2 + 6.*W['12xxzz'] *
                                k1xh**2*k1zh**2 + 6.*W['12yyzz']*k1yh**2*k1zh**2
-                         + 12.*W['12xxyz']*k1xh**2*k1yh*k1zh + 12.*W['12xyyz']*k1yh**2*k1xh*k1zh + 12.*W['12xyzz']*k1zh**2*k1xh*k1yh) \
-                    - 5./2.*W12_k1L2 - 7./8.*W12_L0
+                               + 12.*W['12xxyz']*k1xh**2*k1yh*k1zh + 12.*W['12xyyz']*k1yh**2*k1xh*k1zh + 12.*W['12xyzz']*k1zh**2*k1xh*k1yh) \
+                - 5./2.*W12_k1L2 - 7./8.*W12_L0
 
             W12_k1L4_k2L2 = 2/7.*W12_k1L2 + 20/77.*W12_k1L4
             W12_k1L4_k2L4 = 1/9.*W12_L0 + 100/693.*W12_k1L2 + 162/1001.*W12_k1L4
 
             W12_k2L2 = 1.5*(W['12xx']*k2xh**2 + W['12yy']*k2yh**2 + W['12zz']*k2zh**2
-                        + 2.*W['12xy']*k2xh*k2yh + 2.*W['12yz']*k2yh*k2zh + 2.*W['12xz']*k2zh*k2xh) - 0.5*W['12']
+                            + 2.*W['12xy']*k2xh*k2yh + 2.*W['12yz']*k2yh*k2zh + 2.*W['12xz']*k2zh*k2xh) - 0.5*W['12']
 
             W12_k2L4 = 35./8.*(W['12xxxx']*k2xh**4 + W['12yyyy']*k2yh**4 + W['12zzzz']*k2zh**4
                                + 4.*W['12xxxy']*k2xh**3*k2yh + 4.*W['12xxxz'] *
@@ -788,8 +760,8 @@ class GaussianSurveyWindowCovariance(PowerMultipoleCovariance):
                                k2zh**3*k2xh + 4.*W['12yzzz']*k2zh**3*k2yh
                                + 6.*W['12xxyy']*k2xh**2*k2yh**2 + 6.*W['12xxzz'] *
                                k2xh**2*k2zh**2 + 6.*W['12yyzz']*k2yh**2*k2zh**2
-                         + 12.*W['12xxyz']*k2xh**2*k2yh*k2zh + 12.*W['12xyyz']*k2yh**2*k2xh*k2zh + 12.*W['12xyzz']*k2zh**2*k2xh*k2yh) \
-                    - 5./2.*W12_k2L2 - 7./8.*W12_L0
+                               + 12.*W['12xxyz']*k2xh**2*k2yh*k2zh + 12.*W['12xyyz']*k2yh**2*k2xh*k2zh + 12.*W['12xyzz']*k2zh**2*k2xh*k2yh) \
+                - 5./2.*W12_k2L2 - 7./8.*W12_L0
 
             W12_k1L2_k2L2 = 9./4.*k1k2W12 - 3./4.*xxW12 - 1./2.*W12_k2L2
 
@@ -804,7 +776,7 @@ class GaussianSurveyWindowCovariance(PowerMultipoleCovariance):
                       Wc_k1L4*W_L0, Wc_k1L4*W_k2L2, Wc_k1L4*W_k2L4]
 
             C00exp += [2.*W_L0 * W12_L0, W_k1L2*W12_L0,         W_k1L4 * W12_L0,
-                          W_k2L2*W12_L0, W_k2L4*W12_L0, np.conj(W12_L0)*W12_L0]
+                       W_k2L2*W12_L0, W_k2L4*W12_L0, np.conj(W12_L0)*W12_L0]
 
             C22exp = [Wc_k2L2*W_k1L2 + Wc_L0*W_k1L2_k2L2,
                       Wc_k2L2*W_k1L2_k2L2 + Wc_L0*W_k1L2_Sumk2L22,
@@ -819,16 +791,16 @@ class GaussianSurveyWindowCovariance(PowerMultipoleCovariance):
             C22exp += [W_k1L2*W12_k2L2 + W_k2L2*W12_k1L2 + W_k1L2_k2L2*W12_L0+W_L0*W12_k1L2_k2L2,
 
                        0.5*((1/5.*W_L0+2/7.*W_k1L2 + 18/35.*W_k1L4)*W12_k2L2 + W_k1L2_k2L2*W12_k1L2
-                          + (1/5.*W_k2L2+2/7.*W_k1L2_k2L2 + 18/35.*W_k1L4_k2L2)*W12_L0 + W_k1L2*W12_k1L2_k2L2),
+                            + (1/5.*W_k2L2+2/7.*W_k1L2_k2L2 + 18/35.*W_k1L4_k2L2)*W12_L0 + W_k1L2*W12_k1L2_k2L2),
 
                        0.5*((2/7.*W_k1L2+20/77.*W_k1L4)*W12_k2L2 + W_k1L4_k2L2*W12_k1L2
-                          + (2/7.*W_k1L2_k2L2+20/77.*W_k1L4_k2L2)*W12_L0 + W_k1L4*W12_k1L2_k2L2),
+                            + (2/7.*W_k1L2_k2L2+20/77.*W_k1L4_k2L2)*W12_L0 + W_k1L4*W12_k1L2_k2L2),
 
                        0.5*(W_k1L2_k2L2*W12_k2L2 + (1/5.*W_L0 + 2/7.*W_k2L2 + 18/35.*W_k2L4)*W12_k1L2
-                          + (1/5.*W_k1L2 + 2/7.*W_k1L2_k2L2 + 18/35.*W_k1L2_k2L4)*W12_L0 + W_k2L2*W12_k1L2_k2L2),
+                            + (1/5.*W_k1L2 + 2/7.*W_k1L2_k2L2 + 18/35.*W_k1L2_k2L4)*W12_L0 + W_k2L2*W12_k1L2_k2L2),
 
                        0.5*(W_k1L2_k2L4*W12_k2L2 + (2/7.*W_k2L2 + 20/77.*W_k2L4)*W12_k1L2
-                          + W_k2L4*W12_k1L2_k2L2 + (2/7.*W_k1L2_k2L2 + 20/77.*W_k1L2_k2L4)*W12_L0),
+                            + W_k2L4*W12_k1L2_k2L2 + (2/7.*W_k1L2_k2L2 + 20/77.*W_k1L2_k2L4)*W12_L0),
 
                        np.conj(W12_k1L2_k2L2)*W12_L0 + np.conj(W12_k1L2)*W12_k2L2]
 
@@ -896,7 +868,7 @@ class GaussianSurveyWindowCovariance(PowerMultipoleCovariance):
                       Wc_k1L4_k2L2*W_k1L4_k2L4 + Wc_k1L4*W_k1L4_Sumk2L24]
 
             C42exp += [W_k1L4*W12_k2L2 + W_k2L2*W12_k1L4
-                      + W_k1L4_k2L2*W12_L0 + W['22']*W12_k1L4_k2L2,
+                       + W_k1L4_k2L2*W12_L0 + W['22']*W12_k1L4_k2L2,
 
                        0.5*((2/7.*W_k1L2 + 20/77.*W_k1L4)*W12_k2L2 + W_k1L2_k2L2*W12_k1L4
                             + (2/7.*W_k1L2_k2L2 + 20/77.*W_k1L4_k2L2)*W12_L0 + W_k1L2 * W12_k1L4_k2L2),
@@ -908,7 +880,7 @@ class GaussianSurveyWindowCovariance(PowerMultipoleCovariance):
                             + W_k2L2*W12_k1L4_k2L2 + (1/5.*W_k1L4 + 2/7.*W_k1L4_k2L2 + 18/35.*W_k1L4_k2L4)*W12_L0),
 
                        0.5*(W_k1L4_k2L4*W12_k2L2 + (2/7.*W_k2L2 + 20/77.*W_k2L4)*W12_k1L4
-                       + W_k2L4*W12_k1L4_k2L2 + (2/7.*W_k1L4_k2L2 + 20/77.*W_k1L4_k2L4)*W12_L0),
+                            + W_k2L4*W12_k1L4_k2L2 + (2/7.*W_k1L4_k2L2 + 20/77.*W_k1L4_k2L4)*W12_L0),
 
                        np.conj(W12_k1L4_k2L2)*W12_L0+np.conj(W12_k1L4)*W12_k2L2]  # 1/(nbar)^2
 
@@ -1038,7 +1010,7 @@ class GaussianSurveyWindowCovariance(PowerMultipoleCovariance):
                     Win[j, 9]*(Pfit[0][ki] + Pfit[0][kj])/2. +
                     Win[j, 10]*Pfit[2][ki] + Win[j, 11]*Pfit[4][ki] +
                     Win[j, 12]*Pfit[2][kj] + Win[j, 13]*Pfit[4][kj]
-                ) + \
+            ) + \
                 1.01**2*Win[j, 14]
 
         return Crow
@@ -1063,7 +1035,7 @@ class TrispectrumSurveyWindowCovariance(PowerMultipoleCovariance):
     def _trispectrum_element(self, l1, l2, k1, k2):
 
         # We'll still implement hexadecupole in trispectrum.
-        # For now, return 0 
+        # For now, return 0
         # if 4 in (l1,l2):
         # return 0
 
@@ -1107,7 +1079,7 @@ class TrispectrumSurveyWindowCovariance(PowerMultipoleCovariance):
             # covariance[i,        :  kbins] = trisp(0, 0, k[i], k)
             # covariance[i,   kbins:2*kbins] = trisp(0, 2, k[i], k)
             covariance[i, 2*kbins:3*kbins] = trisp(0, 4, k[i], k)
-            
+
             # covariance[kbins+i,   kbins:2*kbins] = trisp(2, 2, k[i], k)
             covariance[kbins+i, 2*kbins:3*kbins] = trisp(2, 4, k[i], k)
 
@@ -1147,7 +1119,7 @@ class SuperSampleCovariance(PowerMultipoleCovariance):
     def compute_sigma_factors(self):
         Plin = self.Plin
 
-        # Calculating the RMS fluctuations of supersurvey modes 
+        # Calculating the RMS fluctuations of supersurvey modes
         # (e.g., sigma22Sq which was defined in Eq. (33) and later calculated in Eq.(65)
 
         # kmin = 0.
@@ -1168,7 +1140,7 @@ class SuperSampleCovariance(PowerMultipoleCovariance):
                 kmean, powerW22xW10[l1, l2])
             sigma22x10[i, j] = integrate.quad(
                 lambda q: q**2*Plin(q)*Pwin(q)/2/np.pi**2, 0, kmax)[0]
-            
+
         for (i, l1), (j, l2) in itt.combinations_with_replacement(enumerate((0, 2, 4)), 2):
             Pwin = interpolate.InterpolatedUnivariateSpline(
                 kmean, powerW22[l1, l2])
@@ -1240,14 +1212,14 @@ class SuperSampleCovariance(PowerMultipoleCovariance):
             #         + sigma10Sq[0,0]*rsd[l1]*rsd[l2]*np.outer(Plin(k),Plin(k))
 
             covaLA[l1, l2] = -rsd[l2] * np.outer(Plin(k)*(covaLAterm[int(l1/2)] + I['32']/I['22']/I['10']*rsd[l1]*Plin(k)*b2/b1**2+2/I['10']*rsd[l1]), Plin(k)) \
-                    - rsd[l1]*np.outer(Plin(k), Plin(k)*(covaLAterm[int(l2/2)] + I['32']/I['22']/I['10']*rsd[l2]*Plin(k)*b2/b1**2+2/I['10']*rsd[l2])) \
+                - rsd[l1]*np.outer(Plin(k), Plin(k)*(covaLAterm[int(l2/2)] + I['32']/I['22']/I['10']*rsd[l2]*Plin(k)*b2/b1**2+2/I['10']*rsd[l2])) \
                 + (np.sum(1/4.*sigma10Sq[i, j]*integrate.quad(lambda mu: lp(2*i, mu)*(1 + be*mu**2), -1, 1)[0] * integrate.quad(lambda mu: lp(2*j, mu)*(1 + be*mu**2), -1, 1)[0])
                    + 1/I['10']) * rsd[l1]*rsd[l2] * np.outer(Plin(k), Plin(k))
 
         self.covaBC = {key: Covariance(covaBC[key]) for key in covaBC}
 
         self.covaLA = {key: Covariance(covaLA[key]) for key in covaBC}
-    
+
         self._multipole_covariance = {key: Covariance(
             covaLA[key] + covaBC[key]) for key in covaBC}
 

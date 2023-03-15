@@ -21,3 +21,22 @@ def enum2(xs, start=0, step=2):
     for x in xs:
         yield (start, x)
         start += step
+
+# uniformly samples from a shell
+def sample_from_shell(rmin, rmax, discrete=True):
+    
+    r = rmin + (rmax - rmin) * np.random.rand();
+    theta = 2 * np.pi * np.random.rand();
+    phi = np.arccos(1 - 2 * np.random.rand());
+    
+    x = r * np.sin(phi) * np.cos(theta);
+    y = r * np.sin(phi) * np.sin(theta);
+    z = r * np.cos(phi);
+    
+    if(discrete):
+        x,y,z = int(np.round(x)), int(np.round(y)), int(np.round(z))
+        r = np.sqrt(x**2 + y**2 + z**2)
+        if(r < rmin or r > rmax):
+            return sample_from_shell(rmin, rmax, discrete)
+    
+    return x,y,z,r
