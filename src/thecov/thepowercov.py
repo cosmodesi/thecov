@@ -10,18 +10,301 @@ from tqdm import tqdm
 
 from . import trispectrum, utils
 
+class Covariance():
 
-class SurveyWindow:
+    def __init__(self, covariance=None):
+        self._covariance = covariance
 
-    def __init__(self, random_catalog, Nmesh=None, BoxSize=None, alpha=1.0, tqdm=None, mesh_kwargs=None):
+    @property
+    def cov(self):
+        return self._covariance
 
-        if Nmesh:
-            self.Nmesh = Nmesh
-        if BoxSize:
+    @property
+    def cor(self):
+        cov = self.cov
+        v = np.sqrt(np.diag(cov))
+        outer_v = np.outer(v, v)
+        outer_v[outer_v == 0] = np.inf
+        cor = cov / outer_v
+        cor[cov == 0] = 0
+        return cor
+
+    def __add__(self, y):
+        return Covariance(self.cov + (y.cov if isinstance(y, Covariance) else y))
+
+    def __sub__(self, y):
+        return Covariance(self.cov - (y.cov if isinstance(y, Covariance) else y))
+
+    def save(self, filename):
+        np.savez(filename if filename.strip()[-4:] == '.npz' else f'{filename}.npz', covariance=self.cov)
+
+    @classmethod
+    def load(cls, filename):
+        with np.load(filename, mmap_mode='r') as data:
+            return cls(data['covariance'])
+
+    @classmethod
+    def loadtxt(cls, *args, **kwargs):
+        return cls(covariance=np.loadtxt(*args, **kwargs))
+
+    @classmethod
+    def from_array(cls, a):
+        return cls(covariance=a)
+
+
+class PowerCovariance(Covariance):
+
+    def __init__(self):
+        super().__init__()
+
+    def set_kbins(self, kmin, kmax, dk, nmodes=None):
+        self.dk = dk
+        self.kmax = kmax
+        self.kmin = kmin
+
+        if(nmodes is not None):
+            self._nmodes = nmodes
+
+    @property
+    def kbins(self):
+        return len(self.kmid)
+
+    @property
+    def kmid(self):
+        return np.arange(self.kmin + self.dk/2, self.kmax + self.dk/2, self.dk)
+
+    @property
+    def kedges(self):
+        return np.arange(self.kmin, self.kmax + self.dk, self.dk)
+
+    @property
+    def nmodes(self):
+        if hasattr(self, '_nmodes'):
+            return self._nmodes
+        elif hasattr(self, 'volume'):
+            return self.volume/3/(2*np.pi**2) * (self.kedges[1:]**3 - self.kedges[:-1]**3)
+
+    @property
+    def kfun(self):
+        if hasattr(self, 'volume'):
+            volume = self.volume
+        elif hasattr(self, 'BoxSize'):
+            volume = self.volume
+            return 2*np.pi/self.volume**(1/3)
+    
+    @nmodes.setter
+    def nmodes(self, nmodes):
+        self._nmodes = nmodes
+        return nmodes
+
+class PowerMultipoleCovariance(PowerCovariance):
+
+    def __init__(self):
+        super().__init__()
+
+        self._multipole_covariance = {}
+        self._ells = []
+        self._mshape = (0,0)
+
+    @property
+    def cov(self):
+        ells = self.ells
+        cov = np.zeros(np.array(self._mshape)*len(ells))
+        for (i, l1),(j, l2) in itt.product(enumerate(ells), enumerate(ells)):
+            cov[i*self._mshape[0]:(i+1)*self._mshape[0],
+                j*self._mshape[1]:(j+1)*self._mshape[1]] = self.get_ell_cov(l1, l2)
+        return cov
+
+    @property
+    def ells(self):
+        return sorted(self._ells)
+
+    def get_ell_cov(self, l1, l2, force_return=False):
+        if l1 > l2:
+            return self.get_ell_cov(l2, l1).T
+        
+        if (l1, l2) in self._multipole_covariance:
+            return self._multipole_covariance[l1, l2]
+        elif force_return:
+            return np.zeros(self._mshape)
+
+    def set_ell_cov(self, l1, l2, cov):
+        if self._ells == []:
+            self._mshape = cov.shape
+        
+        assert cov.shape == self._mshape
+
+        if l1 not in self.ells:
+            self._ells.append(l1)
+        if l2 not in self.ells:
+            self._ells.append(l2)
+
+        self._multipole_covariance[min((l1,l2)), max((l1,l2))] = cov
+
+    @classmethod
+    def from_array(cls, cov_array, ells=(0,2,4)):
+        assert cov_array.ndim == 2
+        assert cov_array.shape[0] == cov_array.shape[1]
+        assert cov_array.shape[0] % len(ells) == 0
+        c = cov_array
+        cov = cls()
+        cov._ells = ells
+        cov._mshape = tuple(np.array(cov_array.shape)//len(ells))
+        for (i, l1),(j, l2) in itt.combinations_with_replacement(enumerate(ells), r=2):
+            cov.set_ell_cov(l1, l2, c[i*c.shape[0]//len(ells):(i+1)*c.shape[0]//len(ells),
+                                      j*c.shape[1]//len(ells):(j+1)*c.shape[1]//len(ells)])
+        return cov
+
+class BoxGeometry:
+    def __init__(self, volume=None, nbar=None):
+        self.volume = volume
+        self.nbar = nbar
+        self._zmin = None
+        self._zmax = None
+
+    @property
+    def shotnoise(self):
+        return 1/self.nbar
+
+    @shotnoise.setter
+    def shotnoise(self, shotnoise):
+        self.nbar = 1./shotnoise
+
+    @property
+    def zedges(self):
+        return self._zedges
+
+    @property
+    def zmid(self):
+        return (self.zedges[1:] + self.zedges[:-1])/2
+    
+    @property
+    def zmin(self):
+        return self._zmin if self._zmin is not None else self.zedges[0]
+
+    @property
+    def zmax(self):
+        return self._zmax if self._zmax is not None else self.zedges[-1]
+
+    @property
+    def zavg(self):
+        bin_volume = np.diff(self.cosmo.comoving_distance(self.zedges)**3)
+        return np.average(self.zmid, weights=self.nz * bin_volume)
+
+    def set_effective_volume(self, zmin, zmax, area=None, fsky=None, cosmo=None):
+        assert (area is not None) ^ (fsky is not None)
+        
+        if cosmo is not None:
+            self.cosmo = cosmo
+
+        if area is not None:
+            fsky = area / 360**2 * np.pi
+        elif fsky is None:
+            fsky = 1.
+
+        self._zmin = zmin
+        self._zmax = zmax
+
+        self.fsky = fsky
+            
+        self.volume = self.fsky * (self.cosmo.comoving_distance(zmax)**3 - self.cosmo.comoving_distance(zmin)**3)
+
+        return self.volume
+
+    def set_nz(self, zedges, nz, area=None, fsky=None, cosmo=None):
+        assert len(zedges) == len(nz) + 1
+
+        if cosmo is not None:
+            self.cosmo = cosmo
+
+        self._zedges = np.array(zedges)
+        self._nz = np.array(nz)[np.argsort(self.zmid)]
+        self._zedges.sort()
+
+        self.set_effective_volume(zmin=self.zmin, zmax=self.zmax, cosmo=self.cosmo, area=area, fsky=fsky)
+
+        bin_volume = np.diff(self.cosmo.comoving_distance(self.zedges)**3)
+        self.nbar = np.average(self.nz, weights=bin_volume)
+
+    @property
+    def area(self):
+        return self.fsky * 360**2 / np.pi
+
+    @property
+    def nz(self):
+        return self._nz
+
+    @property
+    def ngals(self):
+        return self.nbar * self.volume
+
+class GaussianBoxCovariance(PowerMultipoleCovariance):
+
+    def __init__(self, geometry=None):
+        super().__init__()
+
+        self.set_geometry(geometry)
+        self._pk = {}
+
+    def set_geometry(self, geometry):
+        self.geometry = geometry
+
+    @property
+    def volume(self):
+        return self.geometry.volume
+
+    @property
+    def shotnoise(self):
+        return self.geometry.shotnoise
+
+    def set_pk(self, pk, ell, has_shotnoise=False):
+        self._pk[ell] = pk
+        if ell == 0 and not has_shotnoise:
+            print(f'Adding shotnoise = {self.shotnoise} to ell = 0.')
+            self._pk[ell] += self.shotnoise
+
+    def get_pk(self, ell, force_return=False):
+        if ell in self._pk.keys():
+            return self._pk[ell]
+        elif force_return:
+            return np.zeros(self.kbins)
+
+    def compute_covariance(self, ells=(0,2,4)):
+
+        self._ells = ells
+        self._mshape = (self.kbins, self.kbins)
+
+        P0 = self.get_pk(0, force_return=True)
+        P2 = self.get_pk(2, force_return=True)
+        P4 = self.get_pk(4, force_return=True)
+
+        c = {}
+
+        c[0,0] = P0**2 + 1/5*P2**2 + 1/9*P4**2
+        c[0,2] = 2*P0*P2 + 2/7*P2** 2 + 4/7*P2*P4 + 100/693*P4**2
+        c[0,4] = 2*P0*P4 + 18/35*P2**2 + 40/77*P2*P4 + 162/1001*P4**2
+        c[2,2] = 5*P0**2 + 20/7*P0*P2 + 20/7*P0*P4 + 15/7*P2**2 + 120/77*P2*P4 + 8945/9009*P4**2
+        c[2,4] = 36/7*P0*P2 + 200/77*P0*P4 + 108/77*P2**2 + 3578/1001*P2*P4 + 900/1001*P4**2
+        c[4,4] = 9*P0**2 + 360/77*P0*P2 + 2916/1001*P0*P4 + 16101/5005*P2**2 + 3240/1001*P2*P4 + 42849/17017*P4**2
+
+        for l1,l2 in itt.combinations_with_replacement(ells, r=2):
+            self.set_ell_cov(l1, l2, 2/self.nmodes * np.diag(c[l1,l2]))
+
+        return self.cov
+
+class SurveyGeometry:
+
+    def __init__(self, random_catalog, Nmesh, BoxSize, alpha=1.0, mesh_kwargs=None, tqdm=tqdm):
+
+        self.Nmesh = Nmesh
+        self.alpha = alpha
+
+        if np.ndim(BoxSize) == 0:
+            self.BoxSize = 3*[BoxSize]
+        elif np.ndim(BoxSize) == 1:
             self.BoxSize = BoxSize
-        if alpha:
-            self.alpha = alpha
-        if tqdm:
+
+        if tqdm is not None:
             self.tqdm = tqdm
         else:
             def tqdm(x): return x
@@ -39,47 +322,48 @@ class SurveyWindow:
 
         self._randoms = random_catalog
 
-        self.randoms['RelativePosition'] = self.randoms['Position']
-        self.randoms['Position'] += da.array(3*[self.BoxSize/2])
+        self._randoms['RelativePosition'] = self._randoms['Position']
+        self._randoms['Position'] += da.array(self.BoxSize)/2
 
-        self.ngals = self.randoms.size * self.alpha
+        self._ngals = self.randoms.size * self.alpha
 
         self._W = {}
         self._I = {}
-        for i,j in ['22', '11', '12', '10', '24', '14', '34', '44', '32']:
-            self.randoms[f'W{i}{j}'] = self.randoms['NZ']**(int(i)-1) * self.randoms['WEIGHT_FKP']**int(j)
-            # Computing I_ij integrals
-            self._I[f'{i}{j}'] = (self.randoms[f'W{i}{j}'].sum() * self.alpha).compute()
 
-    def compute_cartesian_fft(self, W):
-        num_ffts = lambda l: (l+1)*(l+2)/2
+        # for i,j in ['22', '11', '12', '10', '24', '14', '34', '44', '32']:
+        #     self._randoms[f'W{i}{j}'] = self._randoms['NZ']**(int(i)-1) * self._randoms['WEIGHT_FKP']**int(j)
+        #     # Computing I_ij integrals
+        #     self._I[f'{i}{j}'] = (self._randoms[f'W{i}{j}'].sum() * self.alpha).compute()
+
+    def compute_cartesian_fft(self, W, tqdm=tqdm):
 
         mesh_kwargs = self._mesh_kwargs
 
         x = self.randoms['RelativePosition'].T
 
-        print(f'Computing moments of W{W}')
+        with tqdm(total=22, desc=f'Computing moments of W{W}') as pbar:
+            self._W[W] = self._format_fft(self.randoms.to_mesh(
+                value=f'W{W}', **mesh_kwargs).paint(mode='complex'), W)
 
-        print('Computing 0th order moment...', end='')
-        self._W[W] = self._format_fft(self.randoms.to_mesh(
-            value=f'W{W}', **mesh_kwargs).paint(mode='complex'), W)
-        print(' Done!')
+            pbar.update(1)
 
-        print('Computing 2nd order moments')
-        for (i, i_label), (j, j_label) in self.tqdm(itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=2), total=num_ffts(2)):
-            label = f'W{W}{i_label}{j_label}'
-            self.randoms[label] = self.randoms[f'W{W}'] * \
-                x[i]*x[j] / (x[0]**2 + x[1]**2 + x[2]**2)
-            self._W[label[1:]] = self._format_fft(self.randoms.to_mesh(
-                value=label, **mesh_kwargs).paint(mode='complex'), W)
+            for (i, i_label), (j, j_label) in itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=2):
+                label = f'W{W}{i_label}{j_label}'
+                self.randoms[label] = self.randoms[f'W{W}'] * \
+                    x[i]*x[j] / (x[0]**2 + x[1]**2 + x[2]**2)
+                self._W[label[1:]] = self._format_fft(self.randoms.to_mesh(
+                    value=label, **mesh_kwargs).paint(mode='complex'), W)
 
-        print('Computing 4th order moments')
-        for (i, i_label), (j, j_label), (k, k_label), (l, l_label) in self.tqdm(itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=4), total=num_ffts(4)):
-            label = f'W{W}{i_label}{j_label}{k_label}{l_label}'
-            self.randoms[label] = self.randoms[f'W{W}'] * x[i] * \
-                x[j]*x[k]*x[l] / (x[0]**2 + x[1]**2 + x[2]**2)**2
-            self._W[label[1:]] = self._format_fft(self.randoms.to_mesh(
-                value=label, **mesh_kwargs).paint(mode='complex'), W)
+                pbar.update(1)
+
+            for (i, i_label), (j, j_label), (k, k_label), (l, l_label) in itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=4):
+                label = f'W{W}{i_label}{j_label}{k_label}{l_label}'
+                self.randoms[label] = self.randoms[f'W{W}'] * x[i] * \
+                    x[j]*x[k]*x[l] / (x[0]**2 + x[1]**2 + x[2]**2)**2
+                self._W[label[1:]] = self._format_fft(self.randoms.to_mesh(
+                    value=label, **mesh_kwargs).paint(mode='complex'), W)
+
+                pbar.update(1)
 
     def compute_cartesian_ffts(self, Wij=('W12', 'W22')):
         if not hasattr(self, '_W'):
@@ -126,25 +410,35 @@ class SurveyWindow:
 
         return np.conj(fourier_cut) if window == '12' else fourier_cut
 
-    @property
-    def I(self):
-        return self._I
+    def W_cat(self, W):
+        w = W.replace("W", "").replace("w", "")
+        if f'W{w}' not in self._randoms.columns:
+            self._randoms[f'W{w}'] = self._randoms['NZ']**(int(i)-1) * self._randoms['WEIGHT_FKP']**int(j)
+        return self._W[w]
+
+    def I(self, W):
+        w = W.replace("I", "").replace("i", "").replace("W", "").replace("w", "")
+        self.W_cat(w)
+        self._I[w] = (self._randoms[f'W{w}'].sum() * self.alpha).compute()
+        return self._I[w]
 
     def W(self, W):
-        w = W.replace("W", "")
-        if w not in self._W.keys():
-            # print(f'Keys available: {self._W.keys()}')
-            print(f'W{w} not found. Computing.')
-            self.compute_cartesian_fft(
-                w.replace("x", "").replace("y", "").replace("z", ""))
+        w = W.replace("W", "").replace("w", "")
+        if w not in self._W:
+            self.W_cat(w)
+            self.compute_cartesian_fft(w.replace("x", "").replace("y", "").replace("z", ""))
         return self._W[w]
 
     @property
     def randoms(self):
         return self._randoms
 
+    @property
+    def ngals(self):
+        return self._ngals
+
     def get_window_multipoles(self, window):
-        dk = 2*np.pi/self.BoxSize
+        dk = 2*np.pi/np.sum(np.array(self.BoxSize)**3)**(1/3)
         Nmesh = self.Nmesh
 
         kx, ky, kz = np.mgrid[-Nmesh//2:Nmesh//2, -
@@ -193,7 +487,7 @@ class SurveyWindow:
         return W_L0, W_L2, W_L4
 
     def compute_power_multipoles(self):
-        dk = 2*np.pi/self.BoxSize
+        dk = 2*np.pi/np.sum(np.array(self.BoxSize)**3)**(1/3)
         Nmesh = self.Nmesh
 
         kx, ky, kz = np.mgrid[-Nmesh//2:Nmesh//2, -
@@ -248,305 +542,18 @@ class SurveyWindow:
             for l1, l2 in powerW22:
                 powerW22[l1, l2][0] = 1. if l1 == l2 else 0.
 
-            for l1, l2 in powerW22xW10.keys():
+            for l1, l2 in powerW22xW10:
                 powerW22xW10[l1, l2][0] = 1. if l1 == l2 else 0.
 
         return kmean, powerW10, powerW22, powerW22xW10
 
 
-class Covariance():
-
-    def __init__(self, covariance=None):
-        self._covariance = covariance
-
-    @property
-    def cov(self):
-        return self._covariance
-
-    @property
-    def cor(self):
-        v = np.sqrt(np.diag(self._covariance))
-        outer_v = np.outer(v, v)
-        outer_v[outer_v == 0] = np.inf
-        correlation = self._covariance / outer_v
-        correlation[self._covariance == 0] = 0
-        return correlation
-
-    def __add__(self, y):
-        return Covariance(self.cov + (y.cov if isinstance(y, Covariance) else y))
-
-    def __sub__(self, y):
-        return Covariance(self.cov - (y.cov if isinstance(y, Covariance) else y))
-
-    def save(self, filename):
-        np.savez(filename if filename.strip()[-4:] == '.npz' else f'{filename}.npz', covariance=self._covariance)
-
-    @classmethod
-    def load(cls, filename):
-        covariance = cls()
-        with np.load(filename, mmap_mode='r') as data:
-            covariance._covariance = data['covariance']
-        return covariance
-
-    @classmethod
-    def loadtxt(cls, *args, **kwargs):
-        covariance = cls()
-        covariance._covariance = np.loadtxt(*args, **kwargs)
-        return covariance
-
-    @classmethod
-    def from_array(cls, a):
-        covariance = cls()
-        covariance._covariance = a
-        return covariance
-
-
-class PowerCovariance(Covariance):
-
-    def __init__(self):
-        super().__init__()
-
-    def set_kbins(self, kmin, kmax, dk, nmodes=None):
-        self.dk = dk
-        self.kmax = kmax
-        self.kmin = kmin
-
-        if(nmodes is not None):
-            self._nmodes = nmodes
-
-    @property
-    def kbins(self):
-        return len(self.kmid)
-
-    @property
-    def kmid(self):
-        return np.arange(self.kmin + self.dk/2, self.kmax + self.dk/2, self.dk)
-
-    @property
-    def kedges(self):
-        return np.arange(self.kmin, self.kmax + self.dk, self.dk)
-
-    @property
-    def nmodes(self):
-        if(hasattr(self, '_nmodes')):
-            return self._nmodes
-        elif(hasattr(self, 'BoxSize') and hasattr(self, 'kmax') and hasattr(self, 'kmin') and hasattr(self, 'dk')):
-            return self.BoxSize**3/3/(2*np.pi**2) * (self.kedges[1:]**3 - self.kedges[:-1]**3)
-
-    @nmodes.setter
-    def nmodes(self, nmodes):
-        self._nmodes = nmodes
-        return nmodes
-
-
-
-class PowerMultipoleCovariance(PowerCovariance):
-
-    def __init__(self):
-        super().__init__()
-
-        self._multipole_covariance = None
-        self._P = {}
-
-    def load_multipole(self, k, P_ell, ell):
-        self._P[ell] = interpolate.InterpolatedUnivariateSpline(k, P_ell)
-
-    def set_multipole_interpolator(self, P_ell_k, ell):
-        self._P[ell] = P_ell_k
-
-    def get_multipole_interpolator(self, ell):
-        return self._P[ell]
-
-    def get_multipole_covariance(self, l1=None, l2=None):
-        if self._multipole_covariance is None:
-            kbins = self.cov.shape[0]//3  # TODO: improve this
-            self._multipole_covariance = {}
-            self._multipole_covariance[0, 0] = Covariance(
-                self.cov[:kbins, :kbins])
-            self._multipole_covariance[0, 2] = Covariance(
-                self.cov[:kbins, kbins:2*kbins])
-            self._multipole_covariance[0, 4] = Covariance(
-                self.cov[:kbins, 2*kbins:3*kbins])
-            self._multipole_covariance[2, 2] = Covariance(
-                self.cov[kbins:2*kbins,   kbins:2*kbins])
-            self._multipole_covariance[2, 4] = Covariance(
-                self.cov[kbins:2*kbins, 2*kbins:3*kbins])
-            self._multipole_covariance[4, 4] = Covariance(
-                self.cov[2*kbins:3*kbins, 2*kbins:3*kbins])
-
-        if None in (l1, l2):
-            assert l1 is None and l2 is None
-            return self._multipole_covariance
-
-        return self._multipole_covariance[l1, l2]
-
-    @property
-    def mcov(self):
-        return self.get_multipole_covariance()
-
-
-class GaussianBoxCovariance(PowerMultipoleCovariance):
-
-    def __init__(self, Lbox=None, nbar=None):
-        super().__init__()
-        if Lbox:
-            self.Lbox = Lbox
-        if nbar:
-            self.nbar = nbar
-
-    @property
-    def Pshot(self):
-        return 1/self.nbar
-
-    @Pshot.setter
-    def Pshot(self, Pshot):
-        self.nbar = 1/Pshot
-
-    def compute_covariance(self):
-        Cov = self._compute_gaussian_covariance_diagonal()
-        self._multipole_covariance = {
-            key: np.diag(Cov[key]) for key in Cov.keys()}
-        self._covariance = np.block([[np.diag(Cov[l1, l2]) if l1 < l2 else np.diag(
-            Cov[l2, l1]).T for l1 in [0, 2, 4]] for l2 in [0, 2, 4]])
-
-    def _compute_gaussian_covariance_diagonal(self):
-
-        k = self.kmid
-        dk = self.dk
-
-        def P0_SN(k): return self._P[0](k) + self.Pshot
-
-        Nmodes = self.Lbox**3/3/(2*np.pi**2) * ((k+dk/2)**3 - (k-dk/2)**3)
-
-        P = self._P
-
-        Cov = {}
-
-        Cov[0, 0] = 2/Nmodes*(P0_SN(k)**2 + P[2](k)**2/5 + P[4](k)**2/9)
-        Cov[0, 2] = 2/Nmodes*(2*P0_SN(k)*P[2](k) + 2*P[2](k)
-                              ** 2/7 + 4*P[2](k)*P[4](k)/7 + 100*P[4](k)**2/693)
-        Cov[0, 4] = 2/Nmodes*(2*P0_SN(k)*P[4](k) + 18*P[2](k)
-                              ** 2/35 + 40*P[2](k)*P[4](k)/77 + 162*P[4](k)**2/1001)
-        Cov[2, 2] = 2/Nmodes*(5*P0_SN(k)**2 + 20*P0_SN(k)*P[2](k)/7 + 20*P0_SN(k)*P[4](
-            k)/7 + 15*P[2](k)**2/7 + 120*P[2](k)*P[4](k)/77 + 8945*P[4](k)**2/9009)
-        Cov[2, 4] = 2/Nmodes*(36*P0_SN(k)*P[2](k)/7 + 200*P0_SN(k)*P[4](k)/77 +
-                              108*P[2](k)**2/77 + 3578*P[2](k)*P[4](k)/1001 + 900*P[4](k)**2/1001)
-        Cov[4, 4] = 2/Nmodes*(9*P0_SN(k)**2 + 360*P0_SN(k)*P[2](k)/77 + 2916*P0_SN(k)*P[4](
-            k)/1001 + 16101*P[2](k)**2/5005 + 3240*P[2](k)*P[4](k)/1001 + 42849*P[4](k)**2/17017)
-
-        return Cov
 
 
 class GaussianSurveyWindowCovariance(PowerMultipoleCovariance):
 
-    @classmethod
-    def from_randoms(cls):
-        pass
-
-    def set_randoms(self, random_catalog, Nmesh=None, BoxSize=None, alpha=1.0, mesh_kwargs=None):
-        if mesh_kwargs is None:
-            mesh_kwargs = {}
-        if Nmesh:
-            self.Nmesh = Nmesh
-        if BoxSize:
-            self.BoxSize = BoxSize
-        if alpha:
-            self.alpha = alpha
-
-        self._mesh_kwargs = {
-            'Nmesh':       self.Nmesh,
-            'BoxSize':     self.BoxSize,
-            'interlaced':  True,
-            'compensated': True,
-            'resampler':   'tsc',
-        }
-
-        self._mesh_kwargs |= mesh_kwargs
-
-        self._randoms = random_catalog
-
-        self.randoms['RelativePosition'] = self.randoms['Position']
-        self.randoms['Position'] += da.array(3*[self.BoxSize/2])
-
-        self.ngals = self.randoms['Weight'].sum() * self.alpha
-
-        self._I = {}
-        for i, j in ['22', '11', '12', '10', '24', '14', '34', '44', '32']:
-            self.randoms[f'W{i}{j}'] = self.randoms['NZ']**(
-                int(i)-1) * self.randoms['WEIGHT_FKP']**int(j)
-            # Computing I_ij integrals
-            self._I[f'{i}{j}'] = (
-                (self.randoms[f'W{i}{j}'] * self.randoms['Weight']).sum() * self.alpha).compute()
-
-    def compute_cartesian_fft(self, W, tqdm=tqdm):
-        def num_ffts(l): return (l+1)*(l+2)/2
-
-        mesh_kwargs = self._mesh_kwargs
-
-        # self._I = {k: self._I[k].compute() for k in self._I.keys()}
-
-        x = self.randoms['RelativePosition'].T
-
-        # print(f'Computing moments of W{W}')
-
-        with tqdm(total=22, desc=f'Computing moments of W{W}') as pbar:
-            # print('Computing 0th order moment...', end='')
-            self._W[W] = self._format_fft(self.randoms.to_mesh(
-                value=f'W{W}', **mesh_kwargs).paint(mode='complex'), W)
-            # print(' Done!')
-
-            pbar.update(1)
-
-            # print('Computing 2nd order moments')
-            for (i, i_label), (j, j_label) in itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=2):
-                label = f'W{W}{i_label}{j_label}'
-                self.randoms[label] = self.randoms[f'W{W}'] * \
-                    x[i]*x[j] / (x[0]**2 + x[1]**2 + x[2]**2)
-                self._W[label[1:]] = self._format_fft(self.randoms.to_mesh(
-                    value=label, **mesh_kwargs).paint(mode='complex'), W)
-
-                pbar.update(1)
-
-            # print('Computing 4th order moments')
-            for (i, i_label), (j, j_label), (k, k_label), (l, l_label) in itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=4):
-                label = f'W{W}{i_label}{j_label}{k_label}{l_label}'
-                self.randoms[label] = self.randoms[f'W{W}'] * x[i] * \
-                    x[j]*x[k]*x[l] / (x[0]**2 + x[1]**2 + x[2]**2)**2
-                self._W[label[1:]] = self._format_fft(self.randoms.to_mesh(
-                    value=label, **mesh_kwargs).paint(mode='complex'), W)
-
-                pbar.update(1)
-
-    def compute_cartesian_ffts(self, Wij=('W12', 'W22'), tqdm=tqdm):
-        if not hasattr(self, '_W'):
-            self._W = {}
-        for W in Wij:
-            self.compute_cartesian_fft(W.replace('W', ''), tqdm=tqdm)
-
-    def save_cartesian_ffts(self, filename):
-        np.savez(filename if filename.strip()[-4:] == '.npz' else filename + '.npz',
-                 **{f'W{k.replace("W","")}': self._W[k] for k in self._W.keys()},
-                 **{f'I{k.replace("I","")}': self.I[k] for k in self.I.keys()},
-                 BoxSize=self.BoxSize,
-                 Nmesh=self.Nmesh,
-                 alpha=self.alpha)
-
-    def load_cartesian_ffts(self, filename):
-        with np.load(filename, mmap_mode='r') as data:
-            self._W = {f[1:]: data[f] for f in data.files if f[0] == 'W'}
-            self._I = {f[1:]: data[f] for f in data.files if f[0] == 'I'}
-
-            self.BoxSize = data['BoxSize']
-            self.Nmesh = data['Nmesh']
-            self.alpha = data['alpha']
-
-            self._mesh_kwargs = {
-                'Nmesh':       self.Nmesh,
-                'BoxSize':     self.BoxSize,
-                'interlaced':  True,
-                'compensated': True,
-                'resampler':   'tsc',
-            }
+    def __init__(self, survey_geometry):
+        super().__init__()
 
     def compute_window_kernels(self, kmodes_sampled, icut, tqdm=tqdm):
         # As the window falls steeply with k, only low-k regions are needed for the calculation.
