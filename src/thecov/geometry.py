@@ -1,0 +1,769 @@
+import copy
+from abc import ABC, abstractmethod
+import itertools as itt
+
+import numpy as np
+import dask.array as da
+from scipy import fft
+
+from tqdm import tqdm
+
+from . import base, utils
+
+class Geometry(ABC):
+    pass
+
+class BoxGeometry(Geometry):
+    def __init__(self, volume=None, nbar=None):
+        self._volume = volume
+        self._nbar = nbar
+        self._zmin = None
+        self._zmax = None
+
+    @property
+    def volume(self):
+        return self._volume
+    
+    @volume.setter
+    def volume(self, volume):
+        self._volume = volume
+
+    @property
+    def nbar(self):
+        return self._nbar
+
+    @nbar.setter
+    def nbar(self, nbar):
+        self._nbar = nbar
+
+    @property
+    def shotnoise(self):
+        return 1/self.nbar
+
+    @shotnoise.setter
+    def shotnoise(self, shotnoise):
+        self.nbar = 1./shotnoise
+
+    @property
+    def zedges(self):
+        return self._zedges
+
+    @property
+    def zmid(self):
+        return (self.zedges[1:] + self.zedges[:-1])/2
+    
+    @property
+    def zmin(self):
+        return self._zmin if self._zmin is not None else self.zedges[0]
+
+    @property
+    def zmax(self):
+        return self._zmax if self._zmax is not None else self.zedges[-1]
+
+    @property
+    def zavg(self):
+        bin_volume = np.diff(self.cosmo.comoving_distance(self.zedges)**3)
+        return np.average(self.zmid, weights=self.nz * bin_volume)
+
+    def set_effective_volume(self, zmin, zmax, area=None, fsky=None, cosmo=None):
+        assert (area is not None) ^ (fsky is not None), "You should define area xor fsky."
+        
+        if cosmo is not None:
+            self.cosmo = cosmo
+
+        if area is not None:
+            fsky = area / 360**2 * np.pi
+        elif fsky is None:
+            fsky = 1.
+
+        self._zmin = zmin
+        self._zmax = zmax
+
+        self.fsky = fsky
+            
+        self.volume = self.fsky * (self.cosmo.comoving_distance(zmax)**3 - self.cosmo.comoving_distance(zmin)**3)
+
+        return self.volume
+
+    def set_nz(self, zedges, nz, area=None, fsky=None, cosmo=None):
+        assert len(zedges) == len(nz) + 1, "Length of zedges should equal length of nz + 1."
+
+        if cosmo is not None:
+            self.cosmo = cosmo
+
+        self._zedges = np.array(zedges)
+        self._nz = np.array(nz)[np.argsort(self.zmid)]
+        self._zedges.sort()
+
+        self.set_effective_volume(zmin=self.zmin, zmax=self.zmax, cosmo=self.cosmo, area=area, fsky=fsky)
+
+        bin_volume = np.diff(self.cosmo.comoving_distance(self.zedges)**3)
+        self.nbar = np.average(self.nz, weights=bin_volume)
+
+    @property
+    def area(self):
+        return self.fsky * 360**2 / np.pi
+
+    @property
+    def nz(self):
+        return self._nz
+
+    @property
+    def ngals(self):
+        return self.nbar * self.volume
+
+
+class SurveyGeometry(Geometry, base.FourierBinned):
+
+    def __init__(self, random_catalog=None, Nmesh=None, BoxSize=None, alpha=1.0, mesh_kwargs=None, tqdm=tqdm):
+
+        base.FourierBinned.__init__(self)
+
+        self.Nmesh = Nmesh
+        self.alpha = alpha
+
+        if np.ndim(BoxSize) == 0:
+            self.BoxSize = 3*[BoxSize]
+        elif np.ndim(BoxSize) == 1:
+            self.BoxSize = BoxSize
+
+        if tqdm is not None:
+            self.tqdm = tqdm
+        else:
+            def tqdm(x): return x
+
+        self._mesh_kwargs = {
+            'Nmesh':       self.Nmesh,
+            'BoxSize':     self.BoxSize,
+            'interlaced':  True,
+            'compensated': True,
+            'resampler':   'tsc',
+        }
+
+        if mesh_kwargs is not None:
+            self._mesh_kwargs.update(mesh_kwargs)
+
+        if random_catalog is not None:
+            self._randoms = random_catalog
+
+            self._randoms['RelativePosition'] = self._randoms['Position']
+            self._randoms['Position'] += da.array(self.BoxSize)/2
+
+            self._ngals = self.randoms.size * self.alpha
+        else:
+            self._ngals = None
+
+        self._W = {}
+        self._I = {}
+
+        # for i,j in ['22', '11', '12', '10', '24', '14', '34', '44', '32']:
+        #     self._randoms[f'W{i}{j}'] = self._randoms['NZ']**(int(i)-1) * self._randoms['WEIGHT_FKP']**int(j)
+        #     # Computing I_ij integrals
+        #     self._I[f'{i}{j}'] = (self._randoms[f'W{i}{j}'].sum() * self.alpha).compute()
+
+
+    def W_cat(self, W):
+        w = W.replace("W", "").replace("w", "")
+
+        if f'W{w}' not in self._randoms.columns:
+            self._randoms[f'W{w}'] = self._randoms['NZ']**(int(w[0])-1) * self._randoms['WEIGHT_FKP']**int(w[1])
+        return self._randoms[f'W{w}']
+
+    def I(self, W):
+        w = W.replace("I", "").replace("i", "").replace("W", "").replace("w", "")
+        self.W_cat(w)
+        self._I[w] = (self._randoms[f'W{w}'].sum() * self.alpha).compute()
+        return self._I[w]
+
+    def W(self, W):
+        w = W.replace("W", "").replace("w", "")
+        if w not in self._W:
+            self.W_cat(w)
+            self.compute_cartesian_fft(w.replace("x", "").replace("y", "").replace("z", ""))
+        return self._W[w]
+
+    def compute_cartesian_ffts(self, Wij=('W12', 'W22')):
+        [self.W(w) for w in Wij]
+
+
+    def compute_cartesian_fft(self, W, tqdm=tqdm):
+
+        mesh_kwargs = self._mesh_kwargs
+
+        x = self.randoms['RelativePosition'].T
+
+        with tqdm(total=22, desc=f'Computing moments of W{W}') as pbar:
+            self._W[W] = self._format_fft(self.randoms.to_mesh(
+                value=f'W{W}', **mesh_kwargs).paint(mode='complex'), W)
+
+            pbar.update(1)
+
+            for (i, i_label), (j, j_label) in itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=2):
+                label = f'W{W}{i_label}{j_label}'
+                self.randoms[label] = self.randoms[f'W{W}'] * \
+                    x[i]*x[j] / (x[0]**2 + x[1]**2 + x[2]**2)
+                self._W[label[1:]] = self._format_fft(self.randoms.to_mesh(
+                    value=label, **mesh_kwargs).paint(mode='complex'), W)
+
+                pbar.update(1)
+
+            for (i, i_label), (j, j_label), (k, k_label), (l, l_label) in itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=4):
+                label = f'W{W}{i_label}{j_label}{k_label}{l_label}'
+                self.randoms[label] = self.randoms[f'W{W}'] * x[i] * \
+                    x[j]*x[k]*x[l] / (x[0]**2 + x[1]**2 + x[2]**2)**2
+                self._W[label[1:]] = self._format_fft(self.randoms.to_mesh(
+                    value=label, **mesh_kwargs).paint(mode='complex'), W)
+
+                pbar.update(1)
+
+
+    def _format_fft(self, fourier, window):
+
+        # PFFT omits modes that are determined by the Hermitian condition. Adding them:
+        fourier_full = utils.r2c_to_c2c_3d(fourier)
+
+        if window == '12':
+            fourier_full = np.conj(fourier_full)
+
+        return fft.fftshift(fourier_full)[::-1, ::-1, ::-1] * self.ngals
+
+    def _unformat_fft(self, fourier, window):
+
+        fourier_cut = fft.ifftshift(
+            fourier[::-1, ::-1, ::-1])[:, :, :fourier.shape[2]//2+1] / self.ngals
+
+        return np.conj(fourier_cut) if window == '12' else fourier_cut
+
+    def save_cartesian_ffts(self, filename):
+        np.savez(filename if filename.strip()[-4:] == '.npz' else f'{filename}.npz', **{f'W{k.replace("W","")}': self._W[k] for k in self._W}, **{
+                 f'I{k.replace("I","")}': self._I[k] for k in self._I}, BoxSize=self.BoxSize, Nmesh=self.Nmesh, alpha=self.alpha)
+
+    def load_cartesian_ffts(self, filename):
+        with np.load(filename, mmap_mode='r') as data:
+            self._W = {f[1:]: data[f] for f in data.files if f[0] == 'W'}
+            self._I = {f[1:]: data[f] for f in data.files if f[0] == 'I'}
+
+            self.BoxSize = data['BoxSize']
+            self.Nmesh = data['Nmesh']
+            self.alpha = data['alpha']
+
+            self._mesh_kwargs = {
+                'Nmesh':       self.Nmesh,
+                'BoxSize':     self.BoxSize,
+                'interlaced':  True,
+                'compensated': True,
+                'resampler':   'tsc',
+            }
+
+    @property
+    def randoms(self):
+        return self._randoms
+
+    @property
+    def ngals(self):
+        return self._ngals
+    @property
+    def kbins(self):
+        return len(self.kmid)
+
+    def get_window_kernels(self):
+        if not (hasattr(self, 'WinKernel') and self.WinKernel is not None):
+            self.compute_window_kernels()
+        return self.WinKernel
+
+    def compute_window_kernels(self, kmodes_sampled=250, icut=15, tqdm=tqdm):
+
+        # Make sure these FFTs are computed
+        self.W('12')
+        self.W('22')
+
+        # As the window falls steeply with k, only low-k regions are needed for the calculation.
+        # Therefore, cutting out the high-k modes in the FFTs using the icut parameter
+        def cutW(W): return W[W.shape[0]//2-icut-1: W.shape[0]//2+icut,
+                              W.shape[1]//2-icut-1: W.shape[1]//2+icut,
+                              W.shape[2]//2-icut-1: W.shape[2]//2+icut]
+
+        self._Wcut = {key: cutW(self.W(key))
+                      for key in self._W.keys() if '12' in key or '22' in key}
+
+        # Recording the k-modes in different shells
+        # Bin_kmodes contains [kx,ky,kz,radius] values of all the modes in the bin
+
+        box_volume = np.prod(np.array(self.BoxSize, dtype=float))
+        kfun = 2*np.pi/box_volume**(1/3)
+
+        self._kmodes = np.array([[utils.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(kmodes_sampled)] for kmin, kmax in zip(self.kedges[:-1], self.kedges[1:])])
+
+        self.WinKernel = np.array([
+            self._compute_window_kernel_row(
+                Nbin, icut=icut, tqdm=tqdm)
+            for Nbin in tqdm(range(self.kbins), total=self.kbins, desc="Computing window kernels")])
+
+    def save_window_kernels(self, filename):
+        np.savez(filename if filename.strip()
+                 [-4:] == '.npz' else f'{filename}.npz', WinKernel=self.WinKernel)
+
+    def load_window_kernels(self, filename):
+        with np.load(filename, mmap_mode='r') as data:
+            self.WinKernel = data['WinKernel']
+
+    def _compute_window_kernel_row(self, Nbin, icut, tqdm=tqdm):
+        # Gives window kernels for L=0,2,4 auto and cross covariance (instead of only L=0 above)
+
+        # Returns an array with [7,15,6] dimensions.
+        #    The first dim corresponds to the k-bin of k2
+        #    (only 3 bins on each side of diagonal are included as the Gaussian covariance drops quickly away from diagonal)
+
+        #    The second dim corresponds to elements to be multiplied by various power spectrum multipoles
+        #    to obtain the final covariance (see function 'Wij' below)
+
+        #    The last dim corresponds to multipoles: [L0xL0,L2xL2,L4xL4,L2xL0,L4xL0,L4xL2]
+
+        I22 = self.I('22')
+
+        W = self._Wcut
+
+        box_volume = np.prod(np.array(self.BoxSize, dtype=float))
+
+        Bin_ModeNum = utils.nmodes(box_volume, self.kedges[:-1], self.kedges[1:])
+        Bin_kmodes = self._kmodes
+
+        kBinWidth = self.dk
+        nBins = self.kbins
+        kfun = 2*np.pi/box_volume**(1/3)
+
+        avgW00 = np.zeros((2*3+1, 15), dtype='<c8')
+        avgW22 = avgW00.copy()
+        avgW44 = avgW00.copy()
+        avgW20 = avgW00.copy()
+        avgW40 = avgW00.copy()
+        avgW42 = avgW00.copy()
+
+        iix, iiy, iiz = np.mgrid[-icut:icut+1,
+                                 -icut:icut+1,
+                                 -icut:icut+1]
+
+        k2xh = np.zeros_like(iix)
+        k2yh = np.zeros_like(iiy)
+        k2zh = np.zeros_like(iiz)
+
+        kmodes_sampled = len(Bin_kmodes[Nbin])
+
+        # Randomly select a mode in the k1 bin
+        # for n in tqdm(sampled, leave=False, desc=f"Row {Nbin}"):
+        for ik1x, ik1y, ik1z, rk1 in Bin_kmodes[Nbin]:
+
+            if rk1 == 0.:
+                k1xh = 0
+                k1yh = 0
+                k1zh = 0
+            else:
+                k1xh = ik1x/rk1
+                k1yh = ik1y/rk1
+                k1zh = ik1z/rk1
+
+            # Build a 3D array of modes around the selected mode
+            k2xh = ik1x-iix
+            k2yh = ik1y-iiy
+            k2zh = ik1z-iiz
+
+            rk2 = np.sqrt(k2xh**2 + k2yh**2 + k2zh**2)
+
+            # to decide later which shell the k2 mode belongs to
+            sort = (rk2*kfun/kBinWidth).astype(int) - Nbin
+            ind = (rk2 == 0)
+            if ind.any() > 0:
+                rk2[ind] = 1e10
+
+            k2xh /= rk2
+            k2yh /= rk2
+            k2zh /= rk2
+            # k2 hat arrays built
+
+            # Now calculating window multipole kernels by taking dot products of cartesian FFTs with k1-hat, k2-hat arrays
+            # W corresponds to W22(k) and Wc corresponds to conjugate of W22(k)
+            # L(i) refers to multipoles
+
+            W_L0 = W['22']
+            Wc_L0 = np.conj(W['22'])
+
+            xx = W['22xx']*k1xh**2 + W['22yy']*k1yh**2 + W['22zz']*k1zh**2 + 2. * \
+                W['22xy']*k1xh*k1yh + 2.*W['22yz'] * \
+                k1yh*k1zh + 2.*W['22xz']*k1zh*k1xh
+            W_k1L2 = 1.5*xx - 0.5*W['22']
+            W_k2L2 = 1.5*(W['22xx']*k2xh**2 + W['22yy']*k2yh**2 + W['22zz']*k2zh**2
+                          + 2.*W['22xy']*k2xh*k2yh + 2.*W['22yz']*k2yh*k2zh + 2.*W['22xz']*k2zh*k2xh) - 0.5*W['22']
+            Wc_k1L2 = np.conj(W_k1L2)
+            Wc_k2L2 = np.conj(W_k2L2)
+
+            W_k1L4 = 35./8.*(W['22xxxx']*k1xh**4 + W['22yyyy']*k1yh**4 + W['22zzzz']*k1zh**4
+                             + 4.*W['22xxxy']*k1xh**3*k1yh + 4.*W['22xxxz'] *
+                             k1xh**3*k1zh + 4.*W['22xyyy']*k1yh**3*k1xh
+                             + 4.*W['22yyyz']*k1yh**3*k1zh + 4.*W['22xzzz'] *
+                             k1zh**3*k1xh + 4.*W['22yzzz']*k1zh**3*k1yh
+                             + 6.*W['22xxyy']*k1xh**2*k1yh**2 + 6.*W['22xxzz'] *
+                             k1xh**2*k1zh**2 + 6.*W['22yyzz']*k1yh**2*k1zh**2
+                             + 12.*W['22xxyz']*k1xh**2*k1yh*k1zh + 12.*W['22xyyz']*k1yh**2*k1xh*k1zh + 12.*W['22xyzz']*k1zh**2*k1xh*k1yh) \
+                - 5./2.*W_k1L2 - 7./8.*W_L0
+
+            Wc_k1L4 = np.conj(W_k1L4)
+
+            k1k2 = W['22xxxx']*(k1xh*k2xh)**2 + W['22yyyy']*(k1yh*k2yh)**2+W['22zzzz']*(k1zh*k2zh)**2 \
+                + W['22xxxy']*(k1xh*k1yh*k2xh**2 + k1xh**2*k2xh*k2yh)*2 \
+                + W['22xxxz']*(k1xh*k1zh*k2xh**2 + k1xh**2*k2xh*k2zh)*2 \
+                + W['22yyyz']*(k1yh*k1zh*k2yh**2 + k1yh**2*k2yh*k2zh)*2 \
+                + W['22yzzz']*(k1zh*k1yh*k2zh**2 + k1zh**2*k2zh*k2yh)*2 \
+                + W['22xyyy']*(k1yh*k1xh*k2yh**2 + k1yh**2*k2yh*k2xh)*2 \
+                + W['22xzzz']*(k1zh*k1xh*k2zh**2 + k1zh**2*k2zh*k2xh)*2 \
+                + W['22xxyy']*(k1xh**2*k2yh**2 + k1yh**2*k2xh**2 + 4.*k1xh*k1yh*k2xh*k2yh) \
+                + W['22xxzz']*(k1xh**2*k2zh**2 + k1zh**2*k2xh**2 + 4.*k1xh*k1zh*k2xh*k2zh) \
+                + W['22yyzz']*(k1yh**2*k2zh**2 + k1zh**2*k2yh**2 + 4.*k1yh*k1zh*k2yh*k2zh) \
+                + W['22xyyz']*(k1xh*k1zh*k2yh**2 + k1yh**2*k2xh*k2zh + 2.*k1yh*k2yh*(k1zh*k2xh + k1xh*k2zh))*2 \
+                + W['22xxyz']*(k1yh*k1zh*k2xh**2 + k1xh**2*k2yh*k2zh + 2.*k1xh*k2xh*(k1zh*k2yh + k1yh*k2zh))*2 \
+                + W['22xyzz']*(k1yh*k1xh*k2zh**2 + k1zh**2*k2yh *
+                               k2xh + 2.*k1zh*k2zh*(k1xh*k2yh + k1yh*k2xh))*2
+
+            W_k2L4 = 35./8.*(W['22xxxx']*k2xh**4 + W['22yyyy']*k2yh**4 + W['22zzzz']*k2zh**4
+                             + 4.*W['22xxxy']*k2xh**3*k2yh + 4.*W['22xxxz'] *
+                             k2xh**3*k2zh + 4.*W['22xyyy']*k2yh**3*k2xh
+                             + 4.*W['22yyyz']*k2yh**3*k2zh + 4.*W['22xzzz'] *
+                             k2zh**3*k2xh + 4.*W['22yzzz']*k2zh**3*k2yh
+                             + 6.*W['22xxyy']*k2xh**2*k2yh**2 + 6.*W['22xxzz'] *
+                             k2xh**2*k2zh**2 + 6.*W['22yyzz']*k2yh**2*k2zh**2
+                             + 12.*W['22xxyz']*k2xh**2*k2yh*k2zh + 12.*W['22xyyz']*k2yh**2*k2xh*k2zh + 12.*W['22xyzz']*k2zh**2*k2xh*k2yh) \
+                - 5./2.*W_k2L2 - 7./8.*W_L0
+
+            Wc_k2L4 = np.conj(W_k2L4)
+
+            W_k1L2_k2L2 = 9./4.*k1k2 - 3./4.*xx - 1./2.*W_k2L2
+            # approximate as 6th order FFTs not simulated
+            W_k1L2_k2L4 = 2/7.*W_k1L2 + 20/77.*W_k1L4
+            W_k1L4_k2L2 = W_k1L2_k2L4  # approximate
+            W_k1L4_k2L4 = 1/9.*W_L0 + 100/693.*W_k1L2 + 162/1001.*W_k1L4
+
+            Wc_k1L2_k2L2 = np.conj(W_k1L2_k2L2)
+            Wc_k1L2_k2L4 = np.conj(W_k1L2_k2L4)
+            Wc_k1L4_k2L2 = Wc_k1L2_k2L4
+            Wc_k1L4_k2L4 = np.conj(W_k1L4_k2L4)
+
+            k1k2W12 = W['12xxxx']*(k1xh*k2xh)**2 + W['12yyyy']*(k1yh*k2yh)**2 + W['12zzzz']*(k1zh*k2zh)**2 \
+                + W['12xxxy']*(k1xh*k1yh*k2xh**2 + k1xh**2*k2xh*k2yh)*2 \
+                + W['12xxxz']*(k1xh*k1zh*k2xh**2 + k1xh**2*k2xh*k2zh)*2 \
+                + W['12yyyz']*(k1yh*k1zh*k2yh**2 + k1yh**2*k2yh*k2zh)*2 \
+                + W['12yzzz']*(k1zh*k1yh*k2zh**2 + k1zh**2*k2zh*k2yh)*2 \
+                + W['12xyyy']*(k1yh*k1xh*k2yh**2 + k1yh**2*k2yh*k2xh)*2 \
+                + W['12xzzz']*(k1zh*k1xh*k2zh**2 + k1zh**2*k2zh*k2xh)*2 \
+                + W['12xxyy']*(k1xh**2*k2yh**2 + k1yh**2*k2xh**2 + 4.*k1xh*k1yh*k2xh*k2yh) \
+                + W['12xxzz']*(k1xh**2*k2zh**2 + k1zh**2*k2xh**2 + 4.*k1xh*k1zh*k2xh*k2zh) \
+                + W['12yyzz']*(k1yh**2*k2zh**2 + k1zh**2*k2yh**2 + 4.*k1yh*k1zh*k2yh*k2zh) \
+                + W['12xyyz']*(k1xh*k1zh*k2yh**2 + k1yh**2*k2xh*k2zh + 2.*k1yh*k2yh*(k1zh*k2xh + k1xh*k2zh))*2 \
+                + W['12xxyz']*(k1yh*k1zh*k2xh**2 + k1xh**2*k2yh*k2zh + 2.*k1xh*k2xh*(k1zh*k2yh + k1yh*k2zh))*2 \
+                + W['12xyzz']*(k1yh*k1xh*k2zh**2 + k1zh**2*k2yh *
+                               k2xh + 2.*k1zh*k2zh*(k1xh*k2yh + k1yh*k2xh))*2
+
+            xxW12 = W['12xx']*k1xh**2 + W['12yy']*k1yh**2 + W['12zz']*k1zh**2 \
+                + 2.*W['12xy']*k1xh*k1yh + 2.*W['12yz'] * \
+                k1yh*k1zh + 2.*W['12xz']*k1zh*k1xh
+
+            W12_L0 = W['12']
+            W12_k1L2 = 1.5*xxW12 - 0.5*W['12']
+            W12_k1L4 = 35./8.*(W['12xxxx']*k1xh**4 + W['12yyyy']*k1yh**4 + W['12zzzz']*k1zh**4
+                               + 4.*W['12xxxy']*k1xh**3*k1yh + 4.*W['12xxxz'] *
+                               k1xh**3*k1zh + 4.*W['12xyyy']*k1yh**3*k1xh
+                               + 6.*W['12xxyy']*k1xh**2*k1yh**2 + 6.*W['12xxzz'] *
+                               k1xh**2*k1zh**2 + 6.*W['12yyzz']*k1yh**2*k1zh**2
+                               + 12.*W['12xxyz']*k1xh**2*k1yh*k1zh + 12.*W['12xyyz']*k1yh**2*k1xh*k1zh + 12.*W['12xyzz']*k1zh**2*k1xh*k1yh) \
+                - 5./2.*W12_k1L2 - 7./8.*W12_L0
+
+            W12_k1L4_k2L2 = 2/7.*W12_k1L2 + 20/77.*W12_k1L4
+            W12_k1L4_k2L4 = 1/9.*W12_L0 + 100/693.*W12_k1L2 + 162/1001.*W12_k1L4
+
+            W12_k2L2 = 1.5*(W['12xx']*k2xh**2 + W['12yy']*k2yh**2 + W['12zz']*k2zh**2
+                            + 2.*W['12xy']*k2xh*k2yh + 2.*W['12yz']*k2yh*k2zh + 2.*W['12xz']*k2zh*k2xh) - 0.5*W['12']
+
+            W12_k2L4 = 35./8.*(W['12xxxx']*k2xh**4 + W['12yyyy']*k2yh**4 + W['12zzzz']*k2zh**4
+                               + 4.*W['12xxxy']*k2xh**3*k2yh + 4.*W['12xxxz'] *
+                               k2xh**3*k2zh + 4.*W['12xyyy']*k2yh**3*k2xh
+                               + 4.*W['12yyyz']*k2yh**3*k2zh + 4.*W['12xzzz'] *
+                               k2zh**3*k2xh + 4.*W['12yzzz']*k2zh**3*k2yh
+                               + 6.*W['12xxyy']*k2xh**2*k2yh**2 + 6.*W['12xxzz'] *
+                               k2xh**2*k2zh**2 + 6.*W['12yyzz']*k2yh**2*k2zh**2
+                               + 12.*W['12xxyz']*k2xh**2*k2yh*k2zh + 12.*W['12xyyz']*k2yh**2*k2xh*k2zh + 12.*W['12xyzz']*k2zh**2*k2xh*k2yh) \
+                - 5./2.*W12_k2L2 - 7./8.*W12_L0
+
+            W12_k1L2_k2L2 = 9./4.*k1k2W12 - 3./4.*xxW12 - 1./2.*W12_k2L2
+
+            W_k1L2_Sumk2L22 = 1/5.*W_k1L2 + 2/7.*W_k1L2_k2L2 + 18/35.*W_k1L2_k2L4
+            W_k1L2_Sumk2L24 = 2/7.*W_k1L2_k2L2 + 20/77.*W_k1L2_k2L4
+            W_k1L4_Sumk2L22 = 1/5.*W_k1L4 + 2/7.*W_k1L4_k2L2 + 18/35.*W_k1L4_k2L4
+            W_k1L4_Sumk2L24 = 2/7.*W_k1L4_k2L2 + 20/77.*W_k1L4_k2L4
+            W_k1L4_Sumk2L44 = 1/9.*W_k1L4 + 100/693.*W_k1L4_k2L2 + 162/1001.*W_k1L4_k2L4
+
+            C00exp = [Wc_L0 * W_L0, Wc_L0 * W_k2L2, Wc_L0 * W_k2L4,
+                      Wc_k1L2*W_L0, Wc_k1L2*W_k2L2, Wc_k1L2*W_k2L4,
+                      Wc_k1L4*W_L0, Wc_k1L4*W_k2L2, Wc_k1L4*W_k2L4]
+
+            C00exp += [2.*W_L0 * W12_L0, W_k1L2*W12_L0,         W_k1L4 * W12_L0,
+                       W_k2L2*W12_L0, W_k2L4*W12_L0, np.conj(W12_L0)*W12_L0]
+
+            C22exp = [Wc_k2L2*W_k1L2 + Wc_L0*W_k1L2_k2L2,
+                      Wc_k2L2*W_k1L2_k2L2 + Wc_L0*W_k1L2_Sumk2L22,
+                      Wc_k2L2*W_k1L2_k2L4 + Wc_L0*W_k1L2_Sumk2L24,
+                      Wc_k1L2_k2L2*W_k1L2 + Wc_k1L2*W_k1L2_k2L2,
+                      Wc_k1L2_k2L2*W_k1L2_k2L2 + Wc_k1L2*W_k1L2_Sumk2L22,
+                      Wc_k1L2_k2L2*W_k1L2_k2L4 + Wc_k1L2*W_k1L2_Sumk2L24,
+                      Wc_k1L4_k2L2*W_k1L2 + Wc_k1L4*W_k1L2_k2L2,
+                      Wc_k1L4_k2L2*W_k1L2_k2L2 + Wc_k1L4*W_k1L2_Sumk2L22,
+                      Wc_k1L4_k2L2*W_k1L2_k2L4 + Wc_k1L4*W_k1L2_Sumk2L24]
+
+            C22exp += [W_k1L2*W12_k2L2 + W_k2L2*W12_k1L2 + W_k1L2_k2L2*W12_L0+W_L0*W12_k1L2_k2L2,
+
+                       0.5*((1/5.*W_L0+2/7.*W_k1L2 + 18/35.*W_k1L4)*W12_k2L2 + W_k1L2_k2L2*W12_k1L2
+                            + (1/5.*W_k2L2+2/7.*W_k1L2_k2L2 + 18/35.*W_k1L4_k2L2)*W12_L0 + W_k1L2*W12_k1L2_k2L2),
+
+                       0.5*((2/7.*W_k1L2+20/77.*W_k1L4)*W12_k2L2 + W_k1L4_k2L2*W12_k1L2
+                            + (2/7.*W_k1L2_k2L2+20/77.*W_k1L4_k2L2)*W12_L0 + W_k1L4*W12_k1L2_k2L2),
+
+                       0.5*(W_k1L2_k2L2*W12_k2L2 + (1/5.*W_L0 + 2/7.*W_k2L2 + 18/35.*W_k2L4)*W12_k1L2
+                            + (1/5.*W_k1L2 + 2/7.*W_k1L2_k2L2 + 18/35.*W_k1L2_k2L4)*W12_L0 + W_k2L2*W12_k1L2_k2L2),
+
+                       0.5*(W_k1L2_k2L4*W12_k2L2 + (2/7.*W_k2L2 + 20/77.*W_k2L4)*W12_k1L2
+                            + W_k2L4*W12_k1L2_k2L2 + (2/7.*W_k1L2_k2L2 + 20/77.*W_k1L2_k2L4)*W12_L0),
+
+                       np.conj(W12_k1L2_k2L2)*W12_L0 + np.conj(W12_k1L2)*W12_k2L2]
+
+            C44exp = [Wc_k2L4 * W_k1L4 + Wc_L0 * W_k1L4_k2L4,
+                      Wc_k2L4 * W_k1L4_k2L2 + Wc_L0 * W_k1L4_Sumk2L24,
+                      Wc_k2L4 * W_k1L4_k2L4 + Wc_L0 * W_k1L4_Sumk2L44,
+                      Wc_k1L2_k2L4*W_k1L4 + Wc_k1L2*W_k1L4_k2L4,
+                      Wc_k1L2_k2L4*W_k1L4_k2L2 + Wc_k1L2*W_k1L4_Sumk2L24,
+                      Wc_k1L2_k2L4*W_k1L4_k2L4 + Wc_k1L2*W_k1L4_Sumk2L44,
+                      Wc_k1L4_k2L4*W_k1L4 + Wc_k1L4*W_k1L4_k2L4,
+                      Wc_k1L4_k2L4*W_k1L4_k2L2 + Wc_k1L4*W_k1L4_Sumk2L24,
+                      Wc_k1L4_k2L4*W_k1L4_k2L4 + Wc_k1L4*W_k1L4_Sumk2L44]
+
+            C44exp += [W_k1L4 * W12_k2L4 + W_k2L4*W12_k1L4
+                       + W_k1L4_k2L4*W12_L0 + W_L0 * W12_k1L4_k2L4,
+
+                       0.5*((2/7.*W_k1L2 + 20/77.*W_k1L4)*W12_k2L4 + W_k1L2_k2L4*W12_k1L4
+                            + (2/7.*W_k1L2_k2L4 + 20/77.*W_k1L4_k2L4)*W12_L0 + W_k1L2 * W12_k1L4_k2L4),
+
+                       0.5*((1/9.*W_L0 + 100/693.*W_k1L2 + 162/1001.*W_k1L4)*W12_k2L4 + W_k1L4_k2L4*W12_k1L4
+                            + (1/9.*W_k2L4 + 100/693.*W_k1L2_k2L4 + 162/1001.*W_k1L4_k2L4)*W12_L0 + W_k1L4 * W12_k1L4_k2L4),
+
+                       0.5*(W_k1L4_k2L2*W12_k2L4 + (2/7.*W_k2L2 + 20/77.*W_k2L4)*W12_k1L4
+                            + W_k2L2*W12_k1L4_k2L4 + (2/7.*W_k1L4_k2L2 + 20/77.*W_k1L4_k2L4)*W12_L0),
+
+                       0.5*(W_k1L4_k2L4*W12_k2L4 + (1/9.*W_L0 + 100/693.*W_k2L2 + 162/1001.*W_k2L4)*W12_k1L4
+                            + W_k2L4*W12_k1L4_k2L4 + (1/9.*W_k1L4 + 100/693.*W_k1L4_k2L2 + 162/1001.*W_k1L4_k2L4)*W12_L0),
+
+                       np.conj(W12_k1L4_k2L4)*W12_L0 + np.conj(W12_k1L4)*W12_k2L4]  # 1/(nbar)^2
+
+            C20exp = [Wc_L0 * W_k1L2,   Wc_L0*W_k1L2_k2L2, Wc_L0 * W_k1L2_k2L4,
+                      Wc_k1L2*W_k1L2, Wc_k1L2*W_k1L2_k2L2, Wc_k1L2*W_k1L2_k2L4,
+                      Wc_k1L4*W_k1L2, Wc_k1L4*W_k1L2_k2L2, Wc_k1L4*W_k1L2_k2L4]
+
+            C20exp += [W_k1L2*W12_L0 + W['22']*W12_k1L2,
+                       0.5*((1/5.*W['22'] + 2/7.*W_k1L2 + 18 /
+                            35.*W_k1L4)*W12_L0 + W_k1L2*W12_k1L2),
+                       0.5*((2/7.*W_k1L2 + 20/77.*W_k1L4)
+                            * W12_L0 + W_k1L4*W12_k1L2),
+                       0.5*(W_k1L2_k2L2*W12_L0 + W_k2L2*W12_k1L2),
+                       0.5*(W_k1L2_k2L4*W12_L0 + W_k2L4*W12_k1L2),
+                       np.conj(W12_k1L2)*W12_L0]
+
+            C40exp = [Wc_L0*W_k1L4,   Wc_L0 * W_k1L4_k2L2, Wc_L0 * W_k1L4_k2L4,
+                      Wc_k1L2*W_k1L4, Wc_k1L2*W_k1L4_k2L2, Wc_k1L2*W_k1L4_k2L4,
+                      Wc_k1L4*W_k1L4, Wc_k1L4*W_k1L4_k2L2, Wc_k1L4*W_k1L4_k2L4]
+
+            C40exp += [W_k1L4*W12_L0 + W['22']*W12_k1L4,
+                       0.5*((2/7.*W_k1L2 + 20/77.*W_k1L4)
+                            * W12_L0 + W_k1L2*W12_k1L4),
+                       0.5*((1/9.*W['22'] + 100/693.*W_k1L2+162 /
+                            1001.*W_k1L4)*W12_L0 + W_k1L4*W12_k1L4),
+                       0.5*(W_k1L4_k2L2*W12_L0 + W_k2L2*W12_k1L4),
+                       0.5*(W_k1L4_k2L4*W12_L0 + W_k2L4*W12_k1L4),
+                       np.conj(W12_k1L4)*W12_L0]
+
+            C42exp = [Wc_k2L2*W_k1L4 + Wc_L0 * W_k1L4_k2L2,
+                      Wc_k2L2*W_k1L4_k2L2 + Wc_L0 * W_k1L4_Sumk2L22,
+                      Wc_k2L2*W_k1L4_k2L4 + Wc_L0 * W_k1L4_Sumk2L24,
+                      Wc_k1L2_k2L2*W_k1L4 + Wc_k1L2*W_k1L4_k2L2,
+                      Wc_k1L2_k2L2*W_k1L4_k2L2 + Wc_k1L2*W_k1L4_Sumk2L22,
+                      Wc_k1L2_k2L2*W_k1L4_k2L4 + Wc_k1L2*W_k1L4_Sumk2L24,
+                      Wc_k1L4_k2L2*W_k1L4 + Wc_k1L4*W_k1L4_k2L2,
+                      Wc_k1L4_k2L2*W_k1L4_k2L2 + Wc_k1L4*W_k1L4_Sumk2L22,
+                      Wc_k1L4_k2L2*W_k1L4_k2L4 + Wc_k1L4*W_k1L4_Sumk2L24]
+
+            C42exp += [W_k1L4*W12_k2L2 + W_k2L2*W12_k1L4
+                       + W_k1L4_k2L2*W12_L0 + W['22']*W12_k1L4_k2L2,
+
+                       0.5*((2/7.*W_k1L2 + 20/77.*W_k1L4)*W12_k2L2 + W_k1L2_k2L2*W12_k1L4
+                            + (2/7.*W_k1L2_k2L2 + 20/77.*W_k1L4_k2L2)*W12_L0 + W_k1L2 * W12_k1L4_k2L2),
+
+                       0.5*((1/9.*W['22'] + 100/693.*W_k1L2 + 162/1001.*W_k1L4)*W12_k2L2 + W_k1L4_k2L2*W12_k1L4
+                            + (1/9.*W_k2L2 + 100/693.*W_k1L2_k2L2 + 162/1001.*W_k1L4_k2L2)*W12_L0 + W_k1L4*W12_k1L4_k2L2),
+
+                       0.5*(W_k1L4_k2L2*W12_k2L2 + (1/5.*W['22'] + 2/7.*W_k2L2 + 18/35.*W_k2L4)*W12_k1L4
+                            + W_k2L2*W12_k1L4_k2L2 + (1/5.*W_k1L4 + 2/7.*W_k1L4_k2L2 + 18/35.*W_k1L4_k2L4)*W12_L0),
+
+                       0.5*(W_k1L4_k2L4*W12_k2L2 + (2/7.*W_k2L2 + 20/77.*W_k2L4)*W12_k1L4
+                            + W_k2L4*W12_k1L4_k2L2 + (2/7.*W_k1L4_k2L2 + 20/77.*W_k1L4_k2L4)*W12_L0),
+
+                       np.conj(W12_k1L4_k2L2)*W12_L0+np.conj(W12_k1L4)*W12_k2L2]  # 1/(nbar)^2
+
+            for i in range(-3, 4):
+                ind = (sort == i)
+                for j in range(15):
+                    avgW00[i+3, j] += np.sum(C00exp[j][ind])
+                    avgW22[i+3, j] += np.sum(C22exp[j][ind])
+                    avgW44[i+3, j] += np.sum(C44exp[j][ind])
+                    avgW20[i+3, j] += np.sum(C20exp[j][ind])
+                    avgW40[i+3, j] += np.sum(C40exp[j][ind])
+                    avgW42[i+3, j] += np.sum(C42exp[j][ind])
+
+        for i in range(0, 2*3+1):
+            if (i+Nbin-3 >= nBins or i+Nbin-3 < 0):
+                avgW00[i] *= 0
+                avgW22[i] *= 0
+                avgW44[i] *= 0
+                avgW20[i] *= 0
+                avgW40[i] *= 0
+                avgW42[i] *= 0
+            else:
+                avgW00[i] = avgW00[i]/(kmodes_sampled*Bin_ModeNum[Nbin+i-3]*I22**2)
+                avgW22[i] = avgW22[i]/(kmodes_sampled*Bin_ModeNum[Nbin+i-3]*I22**2)
+                avgW44[i] = avgW44[i]/(kmodes_sampled*Bin_ModeNum[Nbin+i-3]*I22**2)
+                avgW20[i] = avgW20[i]/(kmodes_sampled*Bin_ModeNum[Nbin+i-3]*I22**2)
+                avgW40[i] = avgW40[i]/(kmodes_sampled*Bin_ModeNum[Nbin+i-3]*I22**2)
+                avgW42[i] = avgW42[i]/(kmodes_sampled*Bin_ModeNum[Nbin+i-3]*I22**2)
+
+        def l_factor(l1, l2): return (2*l1+1) * \
+            (2*l2+1) * (2 if 0 in (l1, l2) else 1)
+
+        avgWij = np.zeros((7, 15, 6))
+
+        avgWij[:, :, 0] = l_factor(0, 0)*np.real(avgW00)
+        avgWij[:, :, 1] = l_factor(2, 2)*np.real(avgW22)
+        avgWij[:, :, 2] = l_factor(4, 4)*np.real(avgW44)
+        avgWij[:, :, 3] = l_factor(2, 0)*np.real(avgW20)
+        avgWij[:, :, 4] = l_factor(4, 0)*np.real(avgW40)
+        avgWij[:, :, 5] = l_factor(4, 2)*np.real(avgW42)
+
+        return avgWij
+
+    @property
+    def shotnoise(self):
+        self.I('22')/self.I('32')
+
+    # -------------- TO BE VALIDATED --------------
+
+    def get_window_multipoles(self, window):
+        dk = 2*np.pi/np.sum(np.array(self.BoxSize)**3)**(1/3)
+        Nmesh = self.Nmesh
+
+        kx, ky, kz = np.mgrid[-Nmesh//2:Nmesh//2, -
+                              Nmesh//2:Nmesh//2, -Nmesh//2:Nmesh//2] * dk
+        kmod = np.sqrt(kx**2 + ky**2 + kz**2)
+
+        kmod[Nmesh//2, Nmesh//2, Nmesh//2] = np.inf  # 0th mode
+        khx, khy, khz = kx/kmod, ky/kmod, kz/kmod
+        kmod[Nmesh//2, Nmesh//2, Nmesh//2] = 0.  # 0th mode
+
+        W_L0 = self.W(window).copy()
+
+        W_L2 = \
+            self.W(f'{window}xx') * 3*khx**2/2 + \
+            self.W(f'{window}xy') * 3*khx*khy + \
+            self.W(f'{window}xz') * 3*khx*khz + \
+            self.W(f'{window}yy') * 3*khy**2/2 + \
+            self.W(f'{window}yz') * 3*khy*khz + \
+            self.W(f'{window}zz') * 3*khz**2/2 + \
+            self.W(window) * -1/2
+
+        W_L4 = \
+            self.W(f'{window}xxxx') * 35*khx**4/8 + \
+            self.W(f'{window}xxxy') * 35*khx**3*khy/2 + \
+            self.W(f'{window}xxxz') * 35*khx**3*khz/2 + \
+            self.W(f'{window}xxyy') * 105*khx**2*khy**2/4 + \
+            self.W(f'{window}xxyz') * 105*khx**2*khy*khz/2 + \
+            self.W(f'{window}xxzz') * 105*khx**2*khz**2/4 + \
+            self.W(f'{window}xyyy') * 35*khx*khy**3/2 + \
+            self.W(f'{window}xyyz') * 105*khx*khy**2*khz/2 + \
+            self.W(f'{window}xyzz') * 105*khx*khy*khz**2/2 + \
+            self.W(f'{window}xzzz') * 35*khx*khz**3/2 + \
+            self.W(f'{window}yyyy') * 35*khy**4/8 + \
+            self.W(f'{window}yyyz') * 35*khy**3*khz/2 + \
+            self.W(f'{window}yyzz') * 105*khy**2*khz**2/4 + \
+            self.W(f'{window}yzzz') * 35*khy*khz**3/2 + \
+            self.W(f'{window}zzzz') * 35*khz**4/8 + \
+            self.W(f'{window}xx') * -15*khx**2/4 + \
+            self.W(f'{window}xy') * -15*khx*khy/2 + \
+            self.W(f'{window}xz') * -15*khx*khz/2 + \
+            self.W(f'{window}yy') * -15*khy**2/4 + \
+            self.W(f'{window}yz') * -15*khy*khz/2 + \
+            self.W(f'{window}zz') * -15*khz**2/4 + \
+            self.W(window) * 3/8
+
+        return W_L0, W_L2, W_L4
+
+    def compute_power_multipoles(self):
+        dk = 2*np.pi/np.sum(np.array(self.BoxSize)**3)**(1/3)
+        Nmesh = self.Nmesh
+
+        kx, ky, kz = np.mgrid[-Nmesh//2:Nmesh//2, -
+                              Nmesh//2:Nmesh//2, -Nmesh//2:Nmesh//2] * dk
+        kmod = np.sqrt(kx**2 + ky**2 + kz**2)
+
+        kmin = 0.
+        kmax = (self.Nmesh + 1) * dk/2
+
+        # central k
+        k = np.arange(kmin + dk/2, kmax + dk/2, dk)
+
+        kedges = np.arange(kmin, kmax + dk, dk)
+
+        kbin = np.digitize(kmod, kedges) - 1
+
+        kmean = np.array([np.average(kmod[kbin == i])
+                         for i, _ in enumerate(k)])
+        # kmean = 3/4*((k+dk/2)**4 - (k-dk/2)**4)/((k+dk/2)**3 - (k-dk/2)**3)
+
+        W10_L0, W10_L2, W10_L4 = self.get_window_multipoles('W10')
+        W22_L0, W22_L2, W22_L4 = self.get_window_multipoles('W22')
+
+        def compute_power(A, B=None):
+            if B is None:
+                B = A
+
+            integrand = np.real(A * np.conj(B))
+
+            return np.array([np.average(integrand[kbin == i]) for i, _ in enumerate(k)])
+
+        powerW22 = {(l1, l2): (2*l1+1)*(2*l2+1)*compute_power(W1, W2)/self.I['22']**2
+                    for (l1, W1), (l2, W2) in itt.combinations_with_replacement(utils.enum2([W22_L0, W22_L2, W22_L4]), 2)}
+
+        powerW10 = {(l1, l2): (2*l1+1)*(2*l2+1)*compute_power(W1, W2)/self.I['10']**2
+                    for (l1, W1), (l2, W2) in itt.combinations_with_replacement(utils.enum2([W10_L0, W10_L2, W10_L4]), 2)}
+
+        powerW22xW10 = {(l1, l2): (2*l1+1)*(2*l2+1)*compute_power(W1, W2)/self.I['22']/self.I['10']
+                        for (l1, W1), (l2, W2) in itt.product(utils.enum2([W22_L0, W22_L2, W22_L4]),
+                                                              utils.enum2([W10_L0, W10_L2, W10_L4]))}
+
+        # subtracting shot noise
+        powerW22[0, 0] -= self.alpha*self.I['34']/self.I['22']**2
+        powerW10[0, 0] -= self.alpha/self.I['10']
+        powerW22xW10[0, 0] -= self.alpha/self.I['10']
+
+        if kmin == 0:
+            # manually setting k = 0 values
+            for l1, l2 in powerW10.items():
+                powerW10[l1, l2][0] = 1. if l1 == l2 else 0.
+
+            for l1, l2 in powerW22:
+                powerW22[l1, l2][0] = 1. if l1 == l2 else 0.
+
+            for l1, l2 in powerW22xW10:
+                powerW22xW10[l1, l2][0] = 1. if l1 == l2 else 0.
+
+        return kmean, powerW10, powerW22, powerW22xW10

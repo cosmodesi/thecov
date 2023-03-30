@@ -11,7 +11,7 @@ def r2c_to_c2c_3d(fourier):
     return np.concatenate((fourier, fourier_c), axis=2)
 
 def triangle_cov(upper, lower, diagonal='upper'):
-    assert diagonal in ['upper', 'lower']
+    assert diagonal in ['upper', 'lower'], "Argument diagonal should be either 'upper' or 'lower'."
     cov = np.triu(upper) + np.tril(lower)
     cov -= np.diag(np.diag(upper if diagonal == 'lower' else lower))
     return cov
@@ -41,31 +41,51 @@ def sample_from_shell(rmin, rmax, discrete=True):
     
     return x,y,z,r
 
-def plot_cov(cova, covb=None, k=None, kmax=None, num_multipoles=3, label_a=None, label_b=None, vmin=-1, vmax=1, num_ticks=5, **kwargs):
+def nmodes(volume, kmin, kmax):
+    return volume/3/(2*np.pi**2) * (kmax**3 - kmin**3)
 
-    def cov2corr(covariance):
-        v = np.sqrt(np.diag(covariance))
-        outer_v = np.outer(v, v)
-        correlation = covariance / outer_v
-        correlation[covariance == 0] = 0
-        return correlation
-    
+def cov2corr(covariance):
+    v = np.sqrt(np.diag(covariance))
+    outer_v = np.outer(v, v)
+    correlation = covariance / outer_v
+    correlation[covariance == 0] = 0
+    return correlation
+
+def plot_cov(cova, covb=None, k=None, kmax=None, num_multipoles=3, label_a=None, label_b=None, vmin=-1, vmax=1, num_ticks=5, **kwargs):
+    import matplotlib.pyplot as plot
+    import matplotlib
+    from matplotlib.colors import LinearSegmentedColormap
+    import itertools as itt
+    from . import base
+
+    color_a = '#333'
+    color_b = '#e13'
+    color_c = '#1e3'
+
+    cmap = LinearSegmentedColormap.from_list("cmap_name", ['#04f', '#fff', '#f30'])
+
     fig, axes = plot.subplots(1, 1, figsize=(12,10), sharey=True, facecolor='white')
     
     if k is None:
-        k = np.arange(cova.shape[0])
+        if isinstance(cova, base.FourierBinned):
+            k = cova.kmid
+            axes.set_xlabel(r"$k$  [h/Mpc]")
+            axes.set_ylabel(r"$k$  [h/Mpc]")
+        else:
+            k = np.arange(cova.shape[0])
     else:
         axes.set_xlabel(r"$k$  [h/Mpc]")
         axes.set_ylabel(r"$k$  [h/Mpc]")
         
+    # if k goes from kmin to kmax only once, repeat it num_multipoles for mono/quadru/hexadeca/...pole
     if len(k) == cova.shape[0]//num_multipoles:
-        # if k goes from kmin to kmax only once, repeat it num_multipoles for mono/quadru/hexadeca/...pole
         k = np.concatenate(num_multipoles*[k])
     
     if covb is not None:
-        cov = triangle_covs(cov2corr(cova), cov2corr(covb))
+        cov = triangle_covs(cova.cor if isinstance(cova, base.Covariance) else cov2cor(cova), 
+                            covb.cor if isinstance(covb, base.Covariance) else cov2cor(covb))
     else:
-        cov = cov2corr(cova)
+        cov = cova.cor if isinstance(cova, base.Covariance) else cov2cor(cova)
     
     if kmax is not None:
         # cut the covariance to kmax
