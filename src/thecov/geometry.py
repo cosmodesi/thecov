@@ -115,12 +115,14 @@ class BoxGeometry(Geometry):
 
 class SurveyGeometry(Geometry, base.FourierBinned):
 
-    def __init__(self, random_catalog=None, Nmesh=None, BoxSize=None, alpha=1.0, mesh_kwargs=None, tqdm=tqdm):
+    def __init__(self, random_catalog=None, Nmesh=None, BoxSize=None, k2_range=3, kmodes_sampled=250, alpha=1.0, mesh_kwargs=None, tqdm=tqdm):
 
         base.FourierBinned.__init__(self)
 
         self.Nmesh = Nmesh
         self.alpha = alpha
+        self.k2_range = k2_range
+        self.kmodes_sampled = kmodes_sampled
 
         if np.ndim(BoxSize) == 0:
             self.BoxSize = 3*[BoxSize]
@@ -146,8 +148,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         if random_catalog is not None:
             self._randoms = random_catalog
 
-            self._randoms['RelativePosition'] = self._randoms['Position']
-            self._randoms['Position'] += da.array(self.BoxSize)/2
+            # self._randoms['RelativePosition'] = self._randoms['Position']
+            # self._randoms['Position'] += da.array(self.BoxSize)/2
 
             self._ngals = self.randoms.size * self.alpha
         else:
@@ -163,20 +165,21 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
 
     def W_cat(self, W):
-        w = W.replace("W", "").replace("w", "")
+        w = W.lower().replace("w", "")
 
         if f'W{w}' not in self._randoms.columns:
             self._randoms[f'W{w}'] = self._randoms['NZ']**(int(w[0])-1) * self._randoms['WEIGHT_FKP']**int(w[1])
         return self._randoms[f'W{w}']
 
     def I(self, W):
-        w = W.replace("I", "").replace("i", "").replace("W", "").replace("w", "")
-        self.W_cat(w)
-        self._I[w] = (self._randoms[f'W{w}'].sum() * self.alpha).compute()
+        w = W.lower().replace("i", "").replace("w", "")
+        if w not in self._I:
+            self.W_cat(w)
+            self._I[w] = (self._randoms[f'W{w}'].sum() * self.alpha).compute()
         return self._I[w]
 
     def W(self, W):
-        w = W.replace("W", "").replace("w", "")
+        w = W.lower().replace("w", "")
         if w not in self._W:
             self.W_cat(w)
             self.compute_cartesian_fft(w.replace("x", "").replace("y", "").replace("z", ""))
@@ -185,36 +188,54 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     def compute_cartesian_ffts(self, Wij=('W12', 'W22')):
         [self.W(w) for w in Wij]
 
-
     def compute_cartesian_fft(self, W, tqdm=tqdm):
+
+        w = W.lower().replace('w', '')
 
         mesh_kwargs = self._mesh_kwargs
 
-        x = self.randoms['RelativePosition'].T
+        x = self.randoms['Position'].T
 
         with tqdm(total=22, desc=f'Computing moments of W{W}') as pbar:
-            self._W[W] = self._format_fft(self.randoms.to_mesh(
-                value=f'W{W}', **mesh_kwargs).paint(mode='complex'), W)
+            self._W[w] = self._format_fft(self.randoms.to_mesh(
+                value=f'W{w}', **mesh_kwargs).paint(mode='complex'), w)
 
             pbar.update(1)
 
             for (i, i_label), (j, j_label) in itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=2):
-                label = f'W{W}{i_label}{j_label}'
-                self.randoms[label] = self.randoms[f'W{W}'] * \
+                label = f'W{w}{i_label}{j_label}'
+                self.randoms[label] = self.randoms[f'W{w}'] * \
                     x[i]*x[j] / (x[0]**2 + x[1]**2 + x[2]**2)
                 self._W[label[1:]] = self._format_fft(self.randoms.to_mesh(
-                    value=label, **mesh_kwargs).paint(mode='complex'), W)
+                    value=label, **mesh_kwargs).paint(mode='complex'), w)
 
                 pbar.update(1)
 
             for (i, i_label), (j, j_label), (k, k_label), (l, l_label) in itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=4):
-                label = f'W{W}{i_label}{j_label}{k_label}{l_label}'
-                self.randoms[label] = self.randoms[f'W{W}'] * x[i] * \
+                label = f'W{w}{i_label}{j_label}{k_label}{l_label}'
+                self.randoms[label] = self.randoms[f'W{w}'] * x[i] * \
                     x[j]*x[k]*x[l] / (x[0]**2 + x[1]**2 + x[2]**2)**2
                 self._W[label[1:]] = self._format_fft(self.randoms.to_mesh(
-                    value=label, **mesh_kwargs).paint(mode='complex'), W)
+                    value=label, **mesh_kwargs).paint(mode='complex'), w)
 
                 pbar.update(1)
+
+    def compute_cartesian_fft_single_mesh(self, W):
+
+        w = W.replace('W', '').replace('w', '')
+        self.W_cat(w)
+
+        mesh_kwargs = self._mesh_kwargs
+
+        real_field = self.randoms.to_mesh(value='W12', **mesh_kwargs).paint(mode='real')
+
+        self._W[w] = self._format_fft(real_field.r2c(), w)
+
+        for (i, i_label), (j, j_label) in itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=2):
+            self._W[f'{w}{i_label}{j_label}'] = self._format_fft(real_field.apply(lambda x,v: np.nan_to_num(v*x[i]*x[j]/(x[0]**2 + x[1]**2 + x[2]**2)), kind='relative').r2c(), w)
+
+        for (i, i_label), (j, j_label), (k, k_label), (l, l_label) in itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=4):
+            self._W[f'{w}{i_label}{j_label}{k_label}{l_label}'] = self._format_fft(real_field.apply(lambda x,v: np.nan_to_num(v*x[i]*x[j]*x[k]*x[l]/(x[0]**2 + x[1]**2 + x[2]**2)**2), kind='relative').r2c(), w)
 
 
     def _format_fft(self, fourier, window):
@@ -271,20 +292,13 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             self.compute_window_kernels()
         return self.WinKernel
 
-    def compute_window_kernels(self, kmodes_sampled=250, icut=15, tqdm=tqdm):
+    # As the window falls steeply with k, only low-k regions are needed for the calculation.
+    # Therefore, high-k modes in the FFTs can be discarted
+    def compute_window_kernels(self, tqdm=tqdm):
 
         # Make sure these FFTs are computed
         self.W('12')
         self.W('22')
-
-        # As the window falls steeply with k, only low-k regions are needed for the calculation.
-        # Therefore, cutting out the high-k modes in the FFTs using the icut parameter
-        def cutW(W): return W[W.shape[0]//2-icut-1: W.shape[0]//2+icut,
-                              W.shape[1]//2-icut-1: W.shape[1]//2+icut,
-                              W.shape[2]//2-icut-1: W.shape[2]//2+icut]
-
-        self._Wcut = {key: cutW(self.W(key))
-                      for key in self._W.keys() if '12' in key or '22' in key}
 
         # Recording the k-modes in different shells
         # Bin_kmodes contains [kx,ky,kz,radius] values of all the modes in the bin
@@ -292,25 +306,25 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         box_volume = np.prod(np.array(self.BoxSize, dtype=float))
         kfun = 2*np.pi/box_volume**(1/3)
 
-        self._kmodes = np.array([[utils.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(kmodes_sampled)] for kmin, kmax in zip(self.kedges[:-1], self.kedges[1:])])
+        self._kmodes = np.array([[utils.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(self.kmodes_sampled)] for kmin, kmax in zip(self.kedges[:-1], self.kedges[1:])])
 
         self.WinKernel = np.array([
-            self._compute_window_kernel_row(
-                Nbin, icut=icut, tqdm=tqdm)
+            self._compute_window_kernel_row(Nbin)
             for Nbin in tqdm(range(self.kbins), total=self.kbins, desc="Computing window kernels")])
 
     def save_window_kernels(self, filename):
         np.savez(filename if filename.strip()
-                 [-4:] == '.npz' else f'{filename}.npz', WinKernel=self.WinKernel)
+                 [-4:] == '.npz' else f'{filename}.npz', WinKernel=self.WinKernel, kmin=self.kmin, kmax=self.kmax, dk=self.dk)
 
     def load_window_kernels(self, filename):
         with np.load(filename, mmap_mode='r') as data:
             self.WinKernel = data['WinKernel']
+            self.set_kbins(data['kmin'], data['kmax'], data['dk'])
 
-    def _compute_window_kernel_row(self, Nbin, icut, tqdm=tqdm):
+    def _compute_window_kernel_row(self, Nbin):
         # Gives window kernels for L=0,2,4 auto and cross covariance (instead of only L=0 above)
 
-        # Returns an array with [7,15,6] dimensions.
+        # Returns an array with [2*k2_range+1,15,6] dimensions.
         #    The first dim corresponds to the k-bin of k2
         #    (only 3 bins on each side of diagonal are included as the Gaussian covariance drops quickly away from diagonal)
 
@@ -321,7 +335,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         I22 = self.I('22')
 
-        W = self._Wcut
+        W = self._W
 
         box_volume = np.prod(np.array(self.BoxSize, dtype=float))
 
@@ -332,16 +346,20 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         nBins = self.kbins
         kfun = 2*np.pi/box_volume**(1/3)
 
-        avgW00 = np.zeros((2*3+1, 15), dtype='<c8')
+        # The Gaussian covariance drops quickly away from diagonal.
+        # Only k2_range points to each side of the diagonal are calculated.
+        k2_range = self.k2_range
+
+        avgW00 = np.zeros((2*k2_range+1, 15), dtype='<c8')
         avgW22 = avgW00.copy()
         avgW44 = avgW00.copy()
         avgW20 = avgW00.copy()
         avgW40 = avgW00.copy()
         avgW42 = avgW00.copy()
 
-        iix, iiy, iiz = np.mgrid[-icut:icut+1,
-                                 -icut:icut+1,
-                                 -icut:icut+1]
+        iix, iiy, iiz = np.mgrid[-self.Nmesh//2+1:self.Nmesh//2+1,
+                                 -self.Nmesh//2+1:self.Nmesh//2+1,
+                                 -self.Nmesh//2+1:self.Nmesh//2+1]
 
         k2xh = np.zeros_like(iix)
         k2yh = np.zeros_like(iiy)
@@ -349,8 +367,6 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         kmodes_sampled = len(Bin_kmodes[Nbin])
 
-        # Randomly select a mode in the k1 bin
-        # for n in tqdm(sampled, leave=False, desc=f"Row {Nbin}"):
         for ik1x, ik1y, ik1z, rk1 in Bin_kmodes[Nbin]:
 
             if rk1 == 0.:
@@ -612,7 +628,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
                        np.conj(W12_k1L4_k2L2)*W12_L0+np.conj(W12_k1L4)*W12_k2L2]  # 1/(nbar)^2
 
-            for i in range(-3, 4):
+            for i in range(-k2_range, k2_range+1):
                 ind = (sort == i)
                 for j in range(15):
                     avgW00[i+3, j] += np.sum(C00exp[j][ind])
@@ -622,8 +638,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                     avgW40[i+3, j] += np.sum(C40exp[j][ind])
                     avgW42[i+3, j] += np.sum(C42exp[j][ind])
 
-        for i in range(0, 2*3+1):
-            if (i+Nbin-3 >= nBins or i+Nbin-3 < 0):
+        for i in range(0, 2*k2_range+1):
+            if (i+Nbin-k2_range >= nBins or i+Nbin-k2_range < 0):
                 avgW00[i] *= 0
                 avgW22[i] *= 0
                 avgW44[i] *= 0
@@ -631,17 +647,17 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                 avgW40[i] *= 0
                 avgW42[i] *= 0
             else:
-                avgW00[i] = avgW00[i]/(kmodes_sampled*Bin_ModeNum[Nbin+i-3]*I22**2)
-                avgW22[i] = avgW22[i]/(kmodes_sampled*Bin_ModeNum[Nbin+i-3]*I22**2)
-                avgW44[i] = avgW44[i]/(kmodes_sampled*Bin_ModeNum[Nbin+i-3]*I22**2)
-                avgW20[i] = avgW20[i]/(kmodes_sampled*Bin_ModeNum[Nbin+i-3]*I22**2)
-                avgW40[i] = avgW40[i]/(kmodes_sampled*Bin_ModeNum[Nbin+i-3]*I22**2)
-                avgW42[i] = avgW42[i]/(kmodes_sampled*Bin_ModeNum[Nbin+i-3]*I22**2)
+                avgW00[i] = avgW00[i]/(kmodes_sampled*Bin_ModeNum[Nbin+i-k2_range]*I22**2)
+                avgW22[i] = avgW22[i]/(kmodes_sampled*Bin_ModeNum[Nbin+i-k2_range]*I22**2)
+                avgW44[i] = avgW44[i]/(kmodes_sampled*Bin_ModeNum[Nbin+i-k2_range]*I22**2)
+                avgW20[i] = avgW20[i]/(kmodes_sampled*Bin_ModeNum[Nbin+i-k2_range]*I22**2)
+                avgW40[i] = avgW40[i]/(kmodes_sampled*Bin_ModeNum[Nbin+i-k2_range]*I22**2)
+                avgW42[i] = avgW42[i]/(kmodes_sampled*Bin_ModeNum[Nbin+i-k2_range]*I22**2)
 
         def l_factor(l1, l2): return (2*l1+1) * \
             (2*l2+1) * (2 if 0 in (l1, l2) else 1)
 
-        avgWij = np.zeros((7, 15, 6))
+        avgWij = np.zeros((2*k2_range+1, 15, 6))
 
         avgWij[:, :, 0] = l_factor(0, 0)*np.real(avgW00)
         avgWij[:, :, 1] = l_factor(2, 2)*np.real(avgW22)
@@ -654,7 +670,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
     @property
     def shotnoise(self):
-        self.I('22')/self.I('32')
+        return self.I('12')/self.I('22')
 
     # -------------- TO BE VALIDATED --------------
 

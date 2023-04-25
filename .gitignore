@@ -20,3 +20,4 @@ __pypackages__/
 .idea/
 .vscode/
 *.code-workspace
+.sourcery.yaml
