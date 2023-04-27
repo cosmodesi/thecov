@@ -1,10 +1,10 @@
-import copy
+
 from abc import ABC, abstractmethod
 import itertools as itt
 
 import numpy as np
-import dask.array as da
 from scipy import fft
+from nbodykit.algorithms import zhist
 
 from tqdm import tqdm
 
@@ -19,6 +19,7 @@ class BoxGeometry(Geometry):
         self._nbar = nbar
         self._zmin = None
         self._zmax = None
+        self.fsky = 1.0
 
     @property
     def volume(self):
@@ -65,44 +66,47 @@ class BoxGeometry(Geometry):
         bin_volume = np.diff(self.cosmo.comoving_distance(self.zedges)**3)
         return np.average(self.zmid, weights=self.nz * bin_volume)
 
-    def set_effective_volume(self, zmin, zmax, area=None, fsky=None, cosmo=None):
-        assert (area is not None) ^ (fsky is not None), "You should define area xor fsky."
-        
-        if cosmo is not None:
-            self.cosmo = cosmo
-
-        if area is not None:
-            fsky = area / 360**2 * np.pi
-        elif fsky is None:
-            fsky = 1.
+    def set_effective_volume(self, zmin, zmax):
 
         self._zmin = zmin
         self._zmax = zmax
-
-        self.fsky = fsky
             
-        self.volume = self.fsky * (self.cosmo.comoving_distance(zmax)**3 - self.cosmo.comoving_distance(zmin)**3)
+        self.volume = self.fsky * 4/3 * np.pi * (self.cosmo.comoving_distance(zmax)**3 - self.cosmo.comoving_distance(zmin)**3)
 
         return self.volume
 
-    def set_nz(self, zedges, nz, area=None, fsky=None, cosmo=None):
+    def set_nz(self, zedges, nz, *args, **kwargs):
         assert len(zedges) == len(nz) + 1, "Length of zedges should equal length of nz + 1."
-
-        if cosmo is not None:
-            self.cosmo = cosmo
-
+        
         self._zedges = np.array(zedges)
         self._nz = np.array(nz)[np.argsort(self.zmid)]
         self._zedges.sort()
 
-        self.set_effective_volume(zmin=self.zmin, zmax=self.zmax, cosmo=self.cosmo, area=area, fsky=fsky)
+        self.set_effective_volume(zmin=self.zmin, zmax=self.zmax, *args, **kwargs)
 
-        bin_volume = np.diff(self.cosmo.comoving_distance(self.zedges)**3)
+        bin_volume = self.fsky * np.diff(self.cosmo.comoving_distance(self.zedges)**3)
         self.nbar = np.average(self.nz, weights=bin_volume)
+
+    def set_randoms(self, randoms, alpha=1.0):
+        import healpy as hp
+
+        nside = 512
+        hpixel = hp.ang2pix(nside, randoms['RA'], randoms['DEC'], lonlat=True)
+        unique_hpixels  = np.unique(hpixel)
+        self.fsky = len(unique_hpixels.compute())/hp.nside2npix(nside)
+
+        print(f'fsky estimated from randoms: {self.fsky:.3f}')
+
+        nz_hist = zhist.RedshiftHistogram(randoms, self.fsky, self.cosmo, redshift='Z')
+        self.set_nz(zedges=nz_hist.bin_edges, nz=nz_hist.nbar*alpha)
 
     @property
     def area(self):
         return self.fsky * 360**2 / np.pi
+    
+    @area.setter
+    def area(self, area):
+        self.fsky = area / 360**2 * np.pi
 
     @property
     def nz(self):
@@ -111,6 +115,19 @@ class BoxGeometry(Geometry):
     @property
     def ngals(self):
         return self.nbar * self.volume
+    
+    @property
+    def cosmo(self):
+        if not hasattr(self, '_cosmo'):
+            print('Cosmology object not set. Using default cosmology.')
+            from nbodykit.lab import cosmology
+            self._cosmo = cosmology.Cosmology(h=0.7).match(Omega0_m=0.31)
+        return self._cosmo
+    
+    @cosmo.setter
+    def cosmo(self, cosmo):
+        self._cosmo = cosmo
+    
 
 
 class SurveyGeometry(Geometry, base.FourierBinned):

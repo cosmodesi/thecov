@@ -1,6 +1,7 @@
 
 import itertools as itt
 import numpy as np
+import copy
 
 from . import utils
 
@@ -12,8 +13,6 @@ class Covariance:
     ----------
     cov : numpy.ndarray
         The covariance matrix.
-    cor : numpy.ndarray
-        The correlation matrix.
     '''
 
     def __init__(self, covariance=None):
@@ -39,6 +38,18 @@ class Covariance:
 
         return self._covariance
 
+    @cov.setter
+    def cov(self, covariance):
+        '''Sets the covariance matrix.
+
+        Parameters
+        ----------
+        covariance : numpy.ndarray
+            (n,n) numpy array with elements corresponding to the covariance.
+        '''
+
+        self._covariance = covariance
+
     @property
     def cor(self):
         '''Returns the correlation matrix.
@@ -61,39 +72,30 @@ class Covariance:
         return cor
 
     def __add__(self, y):
-        '''Implements addition in the Covariance class.
+        obj = copy.deepcopy(self)
+        obj.cov += (y.cov if isinstance(y, Covariance) else y)
 
-        Parameters
-        ----------
-        y
-            Value to be added to this Covariance object. It can be either another instance
-        of the "Covariance" class, a scalar or a numpy array.
-
-        Returns
-        -------
-        Covariance
-            Covariance object corresponding to the sum.
-        '''
-
-        return Covariance(self.cov + (y.cov if isinstance(y, Covariance) else y))
+        return obj
 
     def __sub__(self, y):
-        '''Implements subtraction in the Covariance class.
 
-        Parameters
-        ----------
-        y
-            Value to be subtracted from this Covariance object. It can be either another instance
-        of the "Covariance" class, a scalar or a numpy array.
+        obj = copy.deepcopy(self)
+        obj.cov -= (y.cov if isinstance(y, Covariance) else y)
 
-        Returns
-        -------
-        Covariance
-            Covariance object corresponding to the subtraction result.
+        return obj
+    
+    def __mul__(self, y):
 
-        '''
+        obj = copy.deepcopy(self)
+        obj.cov *= y
 
-        return Covariance(self.cov - (y.cov if isinstance(y, Covariance) else y))
+        return obj
+    
+    def __truediv__(self, y):
+        obj = copy.deepcopy(self)
+        obj.cov /= y
+
+        return obj
 
     @property
     def T(self):
@@ -105,7 +107,10 @@ class Covariance:
             Covariance object corresponding to the transpose of the covariance matrix.
         '''
 
-        return Covariance(self.cov.T)
+        obj = copy.deepcopy(self)
+        obj.cov = obj.cov.T
+
+        return obj
 
     @property
     def shape(self):
@@ -159,6 +164,13 @@ class Covariance:
     def loadtxt(cls, *args, **kwargs):
         '''Loads the covariance from a text file with a specified filename.
 
+        Parameters
+        -------
+        *args
+            Arguments to be passed to numpy.loadtxt.
+        **kwargs
+            Keyword arguments to be passed to numpy.loadtxt.
+
         Returns
         -------
         Covariance
@@ -197,11 +209,43 @@ class MultipoleCovariance(Covariance):
     '''
 
     def __init__(self):
-        super().__init__()
-
         self._multipole_covariance = {}
         self._ells = []
         self._mshape = (0, 0)
+
+    def __add__(self, y):
+        obj = copy.deepcopy(self)
+
+        if isinstance(y, MultipoleCovariance):
+            assert self.ells == y.ells, "ells are not the same"
+
+        obj.set_full_cov(self.cov + (y.cov if isinstance(y, Covariance) else y), self.ells)
+
+        return obj
+
+    def __sub__(self, y):
+        obj = copy.deepcopy(self)
+        
+        if isinstance(y, MultipoleCovariance):
+            assert self.ells == y.ells, "ells are not the same"
+
+        obj.set_full_cov(self.cov - (y.cov if isinstance(y, Covariance) else y), self.ells)
+
+        return obj
+    
+    def __mul__(self, y):
+        obj = copy.deepcopy(self)
+
+        obj.set_full_cov(self.cov * y, self.ells)
+
+        return obj
+    
+    def __truediv__(self, y):
+        obj = copy.deepcopy(self)
+
+        obj.set_full_cov(self.cov / y, self.ells)
+
+        return obj
 
     @property
     def cov(self):
@@ -220,6 +264,19 @@ class MultipoleCovariance(Covariance):
             cov[i*self._mshape[0]:(i+1)*self._mshape[0],
                 j*self._mshape[1]:(j+1)*self._mshape[1]] = self.get_ell_cov(l1, l2).cov
         return cov
+    
+    @cov.setter
+    def cov(self, cov):
+        '''Sets the full covariance matrix from covariances for different multipoles stacked
+        in ascending order.
+
+        Parameters
+        ----------
+        cov : numpy.ndarray
+            An (n,n) numpy array corresponding to the elements of the covariance matrix.
+        '''
+
+        self.set_full_cov(cov, self.ells)
 
     @property
     def ells(self):
@@ -285,9 +342,8 @@ class MultipoleCovariance(Covariance):
         self._multipole_covariance[min((l1, l2)), max((l1, l2))] = cov if isinstance(
             cov, Covariance) else Covariance(cov)
 
-    @classmethod
-    def from_array(cls, cov_array, ells=(0, 2, 4)):
-        '''Creates a MultipoleCovariance object from a numpy array corresponding to the full covariance matrix.
+    def set_full_cov(self, cov_array, ells=(0, 2, 4)):
+        '''Sets the full covariance matrix from stacked covariances for different multipoles.
 
         Parameters
         ----------
@@ -308,13 +364,35 @@ class MultipoleCovariance(Covariance):
             "Covariance matrix shape should be a multiple of the number of ells."
 
         c = cov_array
-        cov = cls()
-        cov._ells = ells
-        cov._mshape = tuple(np.array(cov_array.shape)//len(ells))
+        self._ells = ells
+        self._mshape = tuple(np.array(cov_array.shape)//len(ells))
 
         for (i, l1), (j, l2) in itt.combinations_with_replacement(enumerate(ells), r=2):
-            cov.set_ell_cov(l1, l2, c[i*c.shape[0]//len(ells):(i+1)*c.shape[0]//len(ells),
-                                      j*c.shape[1]//len(ells):(j+1)*c.shape[1]//len(ells)])
+            self.set_ell_cov(l1, l2, c[i*c.shape[0]//len(ells):(i+1)*c.shape[0]//len(ells),
+                                       j*c.shape[1]//len(ells):(j+1)*c.shape[1]//len(ells)])
+        return self
+    
+
+    @classmethod
+    def from_array(cls, *args, **kwargs):
+        '''Creates a MultipoleCovariance object from a numpy array corresponding to the full covariance matrix.
+
+        Parameters
+        ----------
+        cov_array
+            (n,n) numpy array with elements corresponding to the covariance.
+        ells
+            the multipoles for which the covariance matrix is defined.
+
+        Returns
+        -------
+        MultipoleCovariance
+            A MultipoleCovariance object.
+        '''
+
+        cov = cls()
+        cov.set_full_cov(*args, **kwargs)
+        
         return cov
 
     @classmethod
@@ -382,7 +460,10 @@ class FourierBinned:
         -------
             bool, True if k-bins were defined, False otherwise.
         '''
-        return None not in (self.dk, self.kmin, self.kmax)
+        if hasattr(self, 'dk') and hasattr(self, 'kmin') and hasattr(self, 'kmax'):
+            return None not in (self.dk, self.kmin, self.kmax)
+        else:
+            return False
 
     @property
     def kbins(self):
@@ -475,6 +556,6 @@ class FourierBinned:
         nmodes : numpy.ndarray
             The number of modes per k-bin shell.
         '''
-        
+
         self._nmodes = nmodes
         return nmodes

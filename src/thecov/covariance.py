@@ -27,7 +27,12 @@ class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
 
     @property
     def shotnoise(self):
-        '''Shotnoise of the survey.'''
+        '''Shotnoise of the sample.
+        
+        Returns
+        -------
+        float
+            Shotnoise value.'''
 
         return self.geometry.shotnoise
 
