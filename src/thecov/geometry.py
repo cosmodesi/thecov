@@ -2,6 +2,8 @@
 from abc import ABC, abstractmethod
 import itertools as itt
 
+import multiprocessing as mp
+
 import numpy as np
 import dask.array as da
 from scipy import fft
@@ -10,6 +12,9 @@ from nbodykit.algorithms import zhist
 from tqdm import tqdm
 
 from . import base, utils
+
+# Window functions needed for Gaussian covariance calculation
+W_LABELS = ['12', '12xx', '12xy', '12xz', '12yy', '12yz', '12zz', '12xxxx', '12xxxy', '12xxxz', '12xxyy', '12xxyz', '12xxzz', '12xyyy', '12xyyz', '12xyzz', '12xzzz', '12yyyy', '12yyyz', '12yyzz', '12yzzz', '12zzzz', '22', '22xx', '22xy', '22xz', '22yy', '22yz', '22zz', '22xxxx', '22xxxy', '22xxxz', '22xxyy', '22xxyz', '22xxzz', '22xyyy', '22xyyz', '22xyzz', '22xzzz', '22yyyy', '22yyyz', '22yyzz', '22yzzz', '22zzzz']
 
 class Geometry(ABC):
     pass
@@ -218,10 +223,10 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         mesh_kwargs = self._mesh_kwargs
 
         x = self.randoms['RelativePosition'].T
-
+        
         with tqdm(total=22, desc=f'Computing moments of W{w}') as pbar:
-            self._W[w] = self._format_fft(self.randoms.to_mesh(
-                value=f'W{w}', **mesh_kwargs).paint(mode='complex'), w)
+            self.set_cartesian_fft(f'W{w}', self._format_fft(self.randoms.to_mesh(
+                value=f'W{w}', **mesh_kwargs).paint(mode='complex'), w))
 
             pbar.update(1)
 
@@ -229,8 +234,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                 label = f'W{w}{i_label}{j_label}'
                 self.randoms[label] = self.randoms[f'W{w}'] * \
                     x[i]*x[j] / (x[0]**2 + x[1]**2 + x[2]**2)
-                self._W[label[1:]] = self._format_fft(self.randoms.to_mesh(
-                    value=label, **mesh_kwargs).paint(mode='complex'), w)
+                self.set_cartesian_fft(label, self._format_fft(self.randoms.to_mesh(
+                    value=label, **mesh_kwargs).paint(mode='complex'), w))
 
                 pbar.update(1)
 
@@ -238,8 +243,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                 label = f'W{w}{i_label}{j_label}{k_label}{l_label}'
                 self.randoms[label] = self.randoms[f'W{w}'] * x[i] * \
                     x[j]*x[k]*x[l] / (x[0]**2 + x[1]**2 + x[2]**2)**2
-                self._W[label[1:]] = self._format_fft(self.randoms.to_mesh(
-                    value=label, **mesh_kwargs).paint(mode='complex'), w)
+                self.set_cartesian_fft(label, self._format_fft(self.randoms.to_mesh(
+                    value=label, **mesh_kwargs).paint(mode='complex'), w))
 
                 pbar.update(1)
 
@@ -277,6 +282,15 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             fourier[::-1, ::-1, ::-1])[:, :, :fourier.shape[2]//2+1] / self.ngals
 
         return np.conj(fourier_cut) if window == '12' else fourier_cut
+    
+    def set_cartesian_fft(self, label, W):
+        w = label.lower().replace('w', '')
+        if w not in self._W:
+            # Create object proper for multiprocessing
+            self._W[w] = np.frombuffer(mp.RawArray('d', 2*self.Nmesh**3))\
+                           .view(np.complex128)\
+                           .reshape(*3*[self.Nmesh])
+        self._W[w][:,:,:] = W
 
     def save_cartesian_ffts(self, filename):
         np.savez(filename if filename.strip()[-4:] == '.npz' else f'{filename}.npz', **{f'W{k.replace("W","")}': self._W[k] for k in self._W}, **{
@@ -284,12 +298,16 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
     def load_cartesian_ffts(self, filename):
         with np.load(filename, mmap_mode='r') as data:
-            self._W = {f[1:]: data[f] for f in data.files if f[0] == 'W'}
-            self._I = {f[1:]: data[f] for f in data.files if f[0] == 'I'}
 
             self.BoxSize = data['BoxSize']
             self.Nmesh = data['Nmesh']
             self.alpha = data['alpha']
+            
+            for f in data.files:
+                if f[0] == 'W':
+                    self.set_cartesian_fft(f, data[f])
+                elif f[0] == 'I':  
+                    self._I[f[1:]] = data[f]
 
             self._mesh_kwargs = {
                 'Nmesh':       self.Nmesh,
@@ -320,8 +338,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     def compute_window_kernels(self, tqdm=tqdm):
 
         # Make sure these FFTs are computed
-        self.W('12')
-        self.W('22')
+        # self.W('12')
+        # self.W('22')
 
         # Recording the k-modes in different shells
         # Bin_kmodes contains [kx,ky,kz,radius] values of all the modes in the bin
@@ -329,11 +347,40 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         box_volume = np.prod(np.array(self.BoxSize, dtype=float))
         kfun = 2*np.pi/box_volume**(1/3)
 
-        self._kmodes = np.array([[utils.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(self.kmodes_sampled)] for kmin, kmax in zip(self.kedges[:-1], self.kedges[1:])])
+        kmodes = np.array([[utils.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(self.kmodes_sampled)] for kmin, kmax in zip(self.kedges[:-1], self.kedges[1:])])
 
-        self.WinKernel = np.array([
-            self._compute_window_kernel_row(Nbin)
-            for Nbin in tqdm(range(self.kbins), total=self.kbins, desc="Computing window kernels")])
+        for w in W_LABELS:
+            self._W[w] = np.frombuffer(mp.RawArray('d', 2*self.Nmesh**3))\
+                           .view(np.complex128)\
+                           .reshape(*3*[self.Nmesh])
+
+        self.compute_cartesian_fft('W12')
+        self.compute_cartesian_fft('W22')
+
+        init_params = {
+            'I22': self.I('22'),
+            'Volume': np.prod(np.array(self.BoxSize, dtype=float)),
+            'kbins': self.kbins,
+            'dk': self.dk,
+            'Nmesh': self.Nmesh,
+            'k2_range': self.k2_range,
+            'kedges': self.kedges
+        }
+
+        def init_worker(*args):
+            global shared_w
+            global shared_params
+            shared_w = {}
+            for w,l in zip(args, W_LABELS):
+                shared_w[l] = np.frombuffer(w).view(np.complex128).reshape(*3*[self.Nmesh])
+            shared_params = args[-1]
+
+        with mp.Pool(initializer=init_worker, initargs=[*[self._W[w] for w in W_LABELS], init_params]) as pool:
+            self.WinKernel = np.array(list(tqdm(pool.imap(self._compute_window_kernel_row, enumerate(kmodes)), total=self.kbins, desc="Computing window kernels")))
+
+        # self.WinKernel = np.array([
+        #     self._compute_window_kernel_row(Nbin)
+        #     for Nbin in tqdm(range(self.kbins), total=self.kbins, desc="Computing window kernels")])
 
     def save_window_kernels(self, filename):
         np.savez(filename if filename.strip()
@@ -344,7 +391,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             self.WinKernel = data['WinKernel']
             self.set_kbins(data['kmin'], data['kmax'], data['dk'])
 
-    def _compute_window_kernel_row(self, Nbin):
+    @staticmethod
+    def _compute_window_kernel_row(args):
         # Gives window kernels for L=0,2,4 auto and cross covariance (instead of only L=0 above)
 
         # Returns an array with [2*k2_range+1,15,6] dimensions.
@@ -355,23 +403,39 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         #    to obtain the final covariance (see function 'Wij' below)
 
         #    The last dim corresponds to multipoles: [L0xL0,L2xL2,L4xL4,L2xL0,L4xL0,L4xL2]
+        
+        Nbin, Bin_kmodes = args
 
-        I22 = self.I('22')
+        I22        = shared_params['I22']
+        k2_range   = shared_params['k2_range']
+        box_volume = shared_params['Volume']
+        nBins      = shared_params['kbins']
+        kBinWidth  = shared_params['dk']
+        Nmesh      = shared_params['Nmesh']
+        kedges     = shared_params['kedges']
 
-        W = self._W
+        W = shared_w
 
-        box_volume = np.prod(np.array(self.BoxSize, dtype=float))
+        # I22 = self.I('22')
 
-        Bin_ModeNum = utils.nmodes(box_volume, self.kedges[:-1], self.kedges[1:])
-        Bin_kmodes = self._kmodes
+        # W = self._W
 
-        kBinWidth = self.dk
-        nBins = self.kbins
+        # box_volume = np.prod(np.array(self.BoxSize, dtype=float))
+
+        Bin_ModeNum = utils.nmodes(box_volume, kedges[:-1], kedges[1:])
+        # Bin_kmodes = self._kmodes
+
+        # kBinWidth = self.dk
+        # nBins = self.kbins
         kfun = 2*np.pi/box_volume**(1/3)
 
         # The Gaussian covariance drops quickly away from diagonal.
         # Only k2_range points to each side of the diagonal are calculated.
-        k2_range = self.k2_range
+        # k2_range = self.k2_range
+
+        # Nmesh = self.Nmesh
+
+        # Worker stuff
 
         avgW00 = np.zeros((2*k2_range+1, 15), dtype='<c8')
         avgW22 = avgW00.copy()
@@ -380,17 +444,17 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         avgW40 = avgW00.copy()
         avgW42 = avgW00.copy()
 
-        iix, iiy, iiz = np.mgrid[-self.Nmesh//2+1:self.Nmesh//2+1,
-                                 -self.Nmesh//2+1:self.Nmesh//2+1,
-                                 -self.Nmesh//2+1:self.Nmesh//2+1]
+        iix, iiy, iiz = np.mgrid[-Nmesh//2+1:Nmesh//2+1,
+                                 -Nmesh//2+1:Nmesh//2+1,
+                                 -Nmesh//2+1:Nmesh//2+1]
 
         k2xh = np.zeros_like(iix)
         k2yh = np.zeros_like(iiy)
         k2zh = np.zeros_like(iiz)
 
-        kmodes_sampled = len(Bin_kmodes[Nbin])
+        kmodes_sampled = len(Bin_kmodes)
 
-        for ik1x, ik1y, ik1z, rk1 in Bin_kmodes[Nbin]:
+        for ik1x, ik1y, ik1z, rk1 in Bin_kmodes:
 
             if rk1 == 0.:
                 k1xh = 0
