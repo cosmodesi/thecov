@@ -44,7 +44,7 @@ def sample_from_shell(rmin, rmax, discrete=True):
 def nmodes(volume, kmin, kmax):
     return volume/3/(2*np.pi**2) * (kmax**3 - kmin**3)
 
-def cov2corr(covariance):
+def cov2cor(covariance):
     v = np.sqrt(np.diag(covariance))
     outer_v = np.outer(v, v)
     correlation = covariance / outer_v
@@ -88,7 +88,7 @@ def plot_cov_array(cova, covb=None, k=None, kmax=None, num_multipoles=3, label_a
         k = np.concatenate(num_multipoles*[k])
     
     if covb is not None:
-        cov = triangle_covs(cova.cor if isinstance(cova, base.Covariance) else cov2cor(cova), 
+        cov = triangle_cov(cova.cor if isinstance(cova, base.Covariance) else cov2cor(cova), 
                             covb.cor if isinstance(covb, base.Covariance) else cov2cor(covb))
     else:
         cov = cova.cor if isinstance(cova, base.Covariance) else cov2cor(cova)
