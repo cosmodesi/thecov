@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 import itertools as itt
 
 import numpy as np
+import dask.array as da
 from scipy import fft
 from nbodykit.algorithms import zhist
 
@@ -66,7 +67,10 @@ class BoxGeometry(Geometry):
         bin_volume = np.diff(self.cosmo.comoving_distance(self.zedges)**3)
         return np.average(self.zmid, weights=self.nz * bin_volume)
 
-    def set_effective_volume(self, zmin, zmax):
+    def set_effective_volume(self, zmin, zmax, fsky=None):
+
+        if fsky is not None:
+            self.fsky = fsky
 
         self._zmin = zmin
         self._zmax = zmax
@@ -83,9 +87,11 @@ class BoxGeometry(Geometry):
         self._zedges.sort()
 
         self.set_effective_volume(zmin=self.zmin, zmax=self.zmax, *args, **kwargs)
+        print(f'Effective volume: {self.volume:.3e} (Mpc/h)^3')
 
         bin_volume = self.fsky * np.diff(self.cosmo.comoving_distance(self.zedges)**3)
         self.nbar = np.average(self.nz, weights=bin_volume)
+        print(f'Estimated nbar: {self.nbar:.3e} (Mpc/h)^-3')
 
     def set_randoms(self, randoms, alpha=1.0):
         import healpy as hp
@@ -165,8 +171,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         if random_catalog is not None:
             self._randoms = random_catalog
 
-            # self._randoms['RelativePosition'] = self._randoms['Position']
-            # self._randoms['Position'] += da.array(self.BoxSize)/2
+            self._randoms['RelativePosition'] = self._randoms['Position']
+            self._randoms['Position'] += da.array(self.BoxSize)/2
 
             self._ngals = self.randoms.size * self.alpha
         else:
@@ -211,9 +217,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         mesh_kwargs = self._mesh_kwargs
 
-        x = self.randoms['Position'].T
+        x = self.randoms['RelativePosition'].T
 
-        with tqdm(total=22, desc=f'Computing moments of W{W}') as pbar:
+        with tqdm(total=22, desc=f'Computing moments of W{w}') as pbar:
             self._W[w] = self._format_fft(self.randoms.to_mesh(
                 value=f'W{w}', **mesh_kwargs).paint(mode='complex'), w)
 

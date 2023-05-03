@@ -71,6 +71,7 @@ class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
         if ell in self._pk.keys():
             pk = self._pk[ell]
             if remove_shotnoise and ell == 0:
+                print(f'Removing shotnoise = {self.shotnoise} from ell = 0.')
                 return pk - self.shotnoise
             return pk
         elif force_return:

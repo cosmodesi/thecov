@@ -132,7 +132,7 @@ def plot_cov_array(cova, covb=None, k=None, kmax=None, num_multipoles=3, label_a
 def plot_cov(cova, covb=None, kmax=None, label_a=None, label_b=None, vmin=-1, vmax=1, num_ticks=5, **kwargs):
     return plot_cov_array(cova=cova.cov, covb=covb.cov if covb is not None else None, k=cova.kmid, kmax=kmax, label_a=None, label_b=None, vmin=-1, vmax=1, num_ticks=5, **kwargs)
 
-def plot_cov_diag(cova, covb=None, label_a=None, label_b=None, klim=None, portrait=False):
+def plot_cov_diag(cova, covb=None, k=None, label_a=None, label_b=None, klim=None, portrait=False):
     import matplotlib.pyplot as plot
     if covb is None:
         if portrait:
@@ -158,8 +158,10 @@ def plot_cov_diag(cova, covb=None, label_a=None, label_b=None, klim=None, portra
             axes1 = [fig.add_subplot(gs[4*i:4*i+2,j]) for i,j in np.mgrid[0:2, 0:3].T.reshape(-1, 2, order='F')]
             axes2 = [fig.add_subplot(gs[4*i+2,j]) for i,j in np.mgrid[0:2, 0:3].T.reshape(-1, 2, order='F')]
 
-    k  = cova.kmid
-    p2 = cova.get_pk(0)**2
+    if k is None:
+        k  = cova.kmid
+
+    p2 = cova.get_pk(0)**2 if hasattr(cova, 'get_pk') else 1.0
 
     for (l1, l2), ax1, ax2 in zip([(0,0), (2,2), (4,4), (0,2), (0,4), (2,4)], axes1, axes2):
 
