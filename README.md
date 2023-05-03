@@ -4,7 +4,15 @@ Code for estimating theoretical covariance matrices of power spectrum multipoles
 
 Under active development.
 
-To calculate a Gaussian covariance for cut-sky geometry:
+## Installation
+
+```sh
+pip install git+ssh://git@github.com/cosmodesi/thecov.git
+```
+
+## Usage example
+
+To calculate a Gaussian covariance including the survey geometry:
 
 ```python
 
