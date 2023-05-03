@@ -11,7 +11,7 @@ try:
 except KeyError:
     basedir = '.'
 
-sys.path.insert(0, f'{basedir}/src')
+sys.path.insert(0, f'{basedir}/thecov')
 
 import thecov.covariance
 import thecov.geometry
