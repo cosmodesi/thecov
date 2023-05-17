@@ -6,7 +6,6 @@ import multiprocessing as mp
 import os
 
 import numpy as np
-import dask.array as da
 from scipy import fft
 
 from tqdm import tqdm as shell_tqdm
