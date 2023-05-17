@@ -183,6 +183,8 @@ def plot_cov_diag(cova, covb=None, k=None, label_a=None, label_b=None, klim=None
             ax2.axhline(0, c='k', ls='dashed')
         
             frac_lim = 3*np.std((a/b-1)[2:])
+            if(np.isnan(frac_lim) or np.isinf(frac_lim)):
+                frac_lim = 1.0
             ax2.set_ylim(-frac_lim, frac_lim)
 
             ax1.set_xticks([])
