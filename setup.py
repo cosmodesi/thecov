@@ -11,7 +11,6 @@ setup(
     packages=['thecov'],
     install_requires=['numpy',
                       'scipy',
-                      'dask',
                       'tqdm',
                       'nbodykit',
                       ],

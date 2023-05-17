@@ -1,14 +1,12 @@
 
-from abc import ABC, abstractmethod
+from abc import ABC
 import itertools as itt
 
 import multiprocessing as mp
 import os
 
 import numpy as np
-import dask.array as da
 from scipy import fft
-from nbodykit.algorithms import zhist
 
 from tqdm import tqdm as shell_tqdm
 
@@ -109,6 +107,7 @@ class BoxGeometry(Geometry):
 
     def set_randoms(self, randoms, alpha=1.0):
         import healpy as hp
+        from nbodykit.algorithms import zhist
 
         nside = 512
         hpixel = hp.ang2pix(nside, randoms['RA'], randoms['DEC'], lonlat=True)
@@ -202,7 +201,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             self._randoms = random_catalog
 
             self._randoms['RelativePosition'] = self._randoms['Position']
-            self._randoms['Position'] += da.array(self.BoxSize)/2
+            self._randoms['Position'] += np.array(self.BoxSize)/2
 
             self._ngals = self.randoms.size * self.alpha
         else:
@@ -246,6 +245,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         w = W.lower().replace('w', '')
 
+        self.W_cat(w)
+
         mesh_kwargs = self._mesh_kwargs
 
         x = self.randoms['RelativePosition'].T
@@ -253,6 +254,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         with self.tqdm(total=22, desc=f'Computing moments of W{w}') as pbar:
             self.set_cartesian_fft(f'W{w}', self._format_fft(self.randoms.to_mesh(
                 value=f'W{w}', **mesh_kwargs).paint(mode='complex'), w))
+            Ww = self.W(w)[self.Nmesh//2, self.Nmesh//2, self.Nmesh//2].real
+            Iw = self.I(w)
+            assert np.isclose(Ww, Iw, rtol=1e-2), f'Inconsistency between W{w}_0 = {Ww} and I{w} = {Iw}.'
 
             pbar.update(1)
 
