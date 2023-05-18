@@ -152,6 +152,7 @@ class BoxGeometry(Geometry):
 class SurveyGeometry(Geometry, base.FourierBinned):
 
     def __init__(self, random_catalog=None, Nmesh=None, BoxSize=None, kmax_mask=0.05, k2_range=3, kmodes_sampled=250, alpha=1.0, mesh_kwargs=None, tqdm=shell_tqdm):
+        import nbodykit
 
         assert Nmesh is None or Nmesh % 2 == 1, 'Please, use an odd integer for Nmesh.'
 
