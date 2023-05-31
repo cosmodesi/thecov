@@ -1,5 +1,8 @@
 
 import numpy as np
+import matplotlib.pyplot as plot
+
+import collections.abc
 
 def r2c_to_c2c_3d(fourier):
 
@@ -132,71 +135,127 @@ def plot_cov_array(cova, covb=None, k=None, kmax=None, num_multipoles=3, label_a
 def plot_cov(cova, covb=None, kmax=None, label_a=None, label_b=None, vmin=-1, vmax=1, num_ticks=5, **kwargs):
     return plot_cov_array(cova=cova.cov, covb=covb.cov if covb is not None else None, k=cova.kmid, kmax=kmax, label_a=None, label_b=None, vmin=-1, vmax=1, num_ticks=5, **kwargs)
 
-def plot_cov_diag(cova, covb=None, k=None, label_a=None, label_b=None, klim=None, portrait=False):
-    import matplotlib.pyplot as plot
-    if covb is None:
+def plot_cov_diag(cov, k=None, label=None, klim=None, colors=['k', 'r', 'g', 'b'], portrait=False):
+    
+    if not isinstance(cov, collections.abc.Sequence):
+        cov = [cov]
+        
+    if label is None:
+        label = len(cov)*['']
+        
+    if not isinstance(label, collections.abc.Sequence):
+        label = [label]
+        
+
+    if len(cov) == 1:
         if portrait:
-            fig, axes = plot.subplots(3, 2, figsize=(10,8))
+            fig, axes = plot.subplots(3, 2, figsize=(15,15))
             axes1 = axes.T.flatten()
             axes2 = axes1
         else:
-            fig, axes = plot.subplots(2, 3, figsize=(10.5,5))
+            fig, axes = plot.subplots(2, 3, figsize=(20,10))
             axes1 = axes.T.flatten()
             axes2 = axes1
     else:
         from matplotlib.gridspec import GridSpec
         if portrait:
             # Portrait mode
-            fig = plot.figure(figsize=(10,8))
+            fig = plot.figure(figsize=(15,15))
             gs = GridSpec(12, 2, figure=fig)
             axes1 = [fig.add_subplot(gs[4*i:4*i+2,j]) for i,j in np.mgrid[0:3, 0:2].T.reshape(-1, 2)]
             axes2 = [fig.add_subplot(gs[4*i+2,j]) for i,j in np.mgrid[0:3, 0:2].T.reshape(-1, 2)]
         else:
             # Landscape mode
-            fig = plot.figure(figsize=(10.5, 5))
+            fig = plot.figure(figsize=(16, 8))
             gs = GridSpec(8, 3, figure=fig)
             axes1 = [fig.add_subplot(gs[4*i:4*i+2,j]) for i,j in np.mgrid[0:2, 0:3].T.reshape(-1, 2, order='F')]
             axes2 = [fig.add_subplot(gs[4*i+2,j]) for i,j in np.mgrid[0:2, 0:3].T.reshape(-1, 2, order='F')]
 
     if k is None:
-        k  = cova.kmid
+        for c in cov:
+            if hasattr(c, 'kmid'):
+                k  = c.kmid
+                break
 
-    p2 = cova.get_pk(0)**2 if hasattr(cova, 'get_pk') else 1.0
+    p2 = cov[0].get_pk(0)**2 if hasattr(cov[0], 'get_pk') else 1.0
 
     for (l1, l2), ax1, ax2 in zip([(0,0), (2,2), (4,4), (0,2), (0,4), (2,4)], axes1, axes2):
+        
+        for c,l,color in zip(cov,label,colors):
 
-        a = np.diag(cova.get_ell_cov(l1,l2).cov)/p2
-        
-        ax1.semilogy(k,  a, label=label_a, c='r')
-        ax1.semilogy(k, -a, c='r', ls='dashed')
-        
+            a = np.diag(c.get_ell_cov(l1,l2).cov)/p2
+
+            ax1.semilogy(k,  a, label=l, c=color)
+            ax1.semilogy(k, -a, c=color, ls='dashed')
+
+        for c,l,color in zip(cov[1:], label[1:], colors[1:]):
+            a = np.diag(c.get_ell_cov(l1,l2).cov)/p2
+            b = np.diag(cov[0].get_ell_cov(l1,l2).cov)/p2
+            
+            ax2.plot(k,  a/b-1, label='frac. diff', c=color)
+            
         ax1.set_ylabel(r"$C_{l1l2}(k,k)/P_0(k)^2$".replace('l1', str(l1)).replace('l2', str(l2)))
         ax2.set_xlabel('k [h/Mpc]')
-
-        if covb is not None:
-            b = np.diag(covb.get_ell_cov(l1,l2).cov)/p2
-
-            ax1.semilogy(k,  b, label=label_b, c='k')
-            ax1.semilogy(k, -b, c='k', ls='dashed')
-            
-            ax2.plot(k,  a/b-1, label='frac. diff', c='r')
-            ax2.axhline(0, c='k', ls='dashed')
         
-            frac_lim = 3*np.std((a/b-1)[2:])
-            if(np.isnan(frac_lim) or np.isinf(frac_lim)):
-                frac_lim = 1.0
-            ax2.set_ylim(-frac_lim, frac_lim)
+        ax2.axhline(0, c=colors[0], ls='dashed')
 
-            ax1.set_xticks([])
+        frac_lim = 3*np.std((a/b-1)[2:])
+        if(np.isnan(frac_lim) or np.isinf(frac_lim)):
+            frac_lim = 1.0
+        ax2.set_ylim(-frac_lim, frac_lim)
 
-            if klim is not None:
-                ax2.set_xlim(*klim)
+        ax1.set_xticks([])
+
+        if klim is not None:
+            ax2.set_xlim(*klim)
         
         if klim is not None:
             ax1.set_xlim(*klim)
 
-    fig.get_axes()[0].legend()
+    if label != len(label)*['']:
+        fig.get_axes()[0].legend()
+        
     fig.tight_layout()
-    fig.subplots_adjust(hspace=0.4 if covb is None else 0.005)
+    fig.subplots_adjust(hspace=0.4 if len(cov) > 1 else 0.005)
 
     return fig, axes1, axes2
+
+
+def _get_ridgeplot_line(cov, center, nrange):
+    assert cov.ndim == 2
+    y = cov[center, max(0, center - nrange):min(cov.shape[0], center + nrange)]
+
+    start = nrange - center if nrange > center else 0
+    end = start + len(y)
+
+    x = np.arange(start, end)
+
+    return x,y
+
+
+def ridgeplot_cov(cov, k=None, step=1, nrange=10, figsize=(5,25), logplot=False):
+    
+    if not isinstance(cov, collections.abc.Sequence):
+        cov = [cov]
+    
+    fig, axes = plot.subplots(cov[0].shape[0]//step, 1, figsize=figsize)
+    
+    for i,ax in enumerate(axes):
+        for c in cov:
+            x, y = _get_ridgeplot_line(c.cov, i*step, nrange)
+
+            # plotting the distribution
+            ax.semilogy(x,y) if logplot else ax.plot(x,y)
+            ax.scatter(x,y,s=5)
+
+        if k is not None:
+            ax.annotate(f'{k[i]:.4f}', xy = (2*nrange, min(y)))
+        
+        ax.set_xlim((0,2*nrange))
+        
+        # remove borders, axis ticks, and labels
+        ax.axis('off')
+
+    plot.subplots_adjust(hspace=-0.7)
+
+    return fig, axes
