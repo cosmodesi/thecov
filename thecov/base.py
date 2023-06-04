@@ -70,6 +70,22 @@ class Covariance:
         cor = cov / outer_v
         cor[cov == 0] = 0
         return cor
+    
+    def symmetrize(self):
+        """Symmetrizes the covariance matrix in place."""
+        self._covariance = (self._covariance + self._covariance.T)/2
+
+    def symmetrized(self):
+        '''Returns a symmetrized copy of the covariance matrix.
+        
+        Returns
+        -------
+        Covariance
+            Covariance object corresponding to the symmetrized covariance matrix.
+        '''
+        new_cov = copy.deepcopy(self)
+        new_cov.symmetrize()
+        return new_cov
 
     def __add__(self, y):
         obj = copy.deepcopy(self)
@@ -314,7 +330,7 @@ class MultipoleCovariance(Covariance):
         if (l1, l2) in self._multipole_covariance:
             return self._multipole_covariance[l1, l2]
         elif force_return:
-            return np.zeros(self._mshape)
+            return Covariance(np.zeros(self._mshape))
 
     def set_ell_cov(self, l1, l2, cov):
         '''Sets the covariance matrix for a given pair of multipoles.
@@ -411,6 +427,11 @@ class MultipoleCovariance(Covariance):
         '''
 
         return cls.from_array(np.loadtxt(*args, **kwargs))
+        
+    def symmetrize(self):
+        '''Symmetrizes the covariance matrix in place.'''
+        for _, cov in self._multipole_covariance.items():
+            cov.symmetrize()
 
 
 class FourierBinned:
