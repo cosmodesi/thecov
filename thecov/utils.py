@@ -1,3 +1,5 @@
+"""This module contains utility functions for the covariance calculation, plotting, etc.
+"""
 
 import numpy as np
 import matplotlib.pyplot as plot
@@ -5,6 +7,19 @@ import matplotlib.pyplot as plot
 import collections.abc
 
 def r2c_to_c2c_3d(fourier):
+    """Completes a 3D Fourier array generated using PFFT's r2c method with the elements
+    that are omitted due to the Hermitian symmetry of the Fourier transform.
+    
+    Parameters
+    ----------
+    fourier : array_like
+        3D Fourier array generated using PFFT's r2c method.
+        
+    Returns
+    -------
+    array_like
+        Completed 3D Fourier array.
+    """
 
     fourier_c = np.conj(fourier[:, :, (-2 if fourier.shape[0]%2 == 0 else -1):0:-1])
 
@@ -14,6 +29,23 @@ def r2c_to_c2c_3d(fourier):
     return np.concatenate((fourier, fourier_c), axis=2)
 
 def triangle_cov(upper, lower, diagonal='upper'):
+    '''Construct a covariance matrix from its upper and lower triangular parts.
+    
+    Parameters
+    ----------
+    upper : array_like
+        Upper triangular part of the covariance matrix.
+    lower : array_like
+        Lower triangular part of the covariance matrix.
+    diagonal : str, optional
+        Whether the diagonal of the covariance matrix is in the upper or lower triangular part.
+        Default is 'upper'.
+        
+    Returns
+    -------
+    array_like
+        Covariance matrix.
+    '''
     assert diagonal in ['upper', 'lower'], "Argument diagonal should be either 'upper' or 'lower'."
     cov = np.triu(upper) + np.tril(lower)
     cov -= np.diag(np.diag(upper if diagonal == 'lower' else lower))
@@ -21,12 +53,44 @@ def triangle_cov(upper, lower, diagonal='upper'):
     
 # python's enumerate but with a custom step = 2
 def enum2(xs, start=0, step=2):
+    """Enumerate a sequence with a custom step.
+    
+    Parameters
+    ----------
+    xs : sequence
+        Sequence to enumerate.
+    start : int, optional
+        Starting index. Default is 0.
+    step : int, optional
+        Step of the enumeration. Default is 2.
+    
+    Returns
+    -------
+    generator
+        Generator of tuples (index, element).
+    """
     for x in xs:
         yield (start, x)
         start += step
 
-# uniformly samples from a shell
 def sample_from_shell(rmin, rmax, discrete=True):
+    """Sample a point uniformly from a spherical shell.
+    
+    Parameters
+    ----------
+    rmin : float
+        Minimum radius of the shell.
+    rmax : float
+        Maximum radius of the shell.
+    discrete : bool, optional
+        If True, the sampled point will be rounded to the nearest integer.
+        Default is True.
+        
+    Returns
+    -------
+    x,y,z,r : float
+        Coordinates of the sampled point.
+    """
     
     r = rmin + (rmax - rmin) * np.random.rand()
     theta = 2 * np.pi * np.random.rand()
@@ -45,9 +109,36 @@ def sample_from_shell(rmin, rmax, discrete=True):
     return x,y,z,r
 
 def nmodes(volume, kmin, kmax):
+    '''Compute the number of modes in a given shell.
+    
+    Parameters
+    ----------
+    volume : float
+        Volume of the survey.
+    kmin : float
+        Minimum k of the shell.
+    kmax : float
+        Maximum k of the shell.
+        
+    Returns
+    -------
+    float
+        Number of modes.
+    '''
     return volume/3/(2*np.pi**2) * (kmax**3 - kmin**3)
 
 def cov2cor(covariance):
+    '''Compute the correlation matrix from the covariance matrix.
+    
+    Parameters
+    ----------
+    covariance : array_like
+        Covariance matrix.
+        
+    Returns
+    -------
+    array_like
+        Correlation matrix.'''
     v = np.sqrt(np.diag(covariance))
     outer_v = np.outer(v, v)
     correlation = covariance / outer_v
@@ -55,6 +146,33 @@ def cov2cor(covariance):
     return correlation
 
 def plot_cov_array(cova, covb=None, k=None, kmax=None, num_multipoles=3, label_a=None, label_b=None, vmin=-1, vmax=1, num_ticks=5, **kwargs):
+    '''Plot the correlation matrix of a covariance matrix in array form.
+    
+    Parameters
+    ----------
+    cova : array_like
+        Covariance matrix.
+    covb : array_like, optional
+        Second covariance matrix to plot. Default is None.
+    k : array_like, optional
+        k bins of the covariance matrix. Default is None.
+    kmax : float, optional
+        Maximum k to plot. Default is None.
+    num_multipoles : int, optional
+        Number of multipoles to plot. Default is 3.
+    label_a : str, optional
+        Label for the first covariance matrix. Default is None.
+    label_b : str, optional
+        Label for the second covariance matrix. Default is None.
+    vmin : float, optional
+        Minimum value of the colorbar. Default is -1.
+    vmax : float, optional
+        Maximum value of the colorbar. Default is 1.
+    num_ticks : int, optional
+        Number of ticks on the axes. Default is 5.
+    **kwargs
+        Additional arguments to pass to matplotlib's imshow.
+    '''
     import matplotlib.pyplot as plot
     import matplotlib
     from matplotlib.colors import LinearSegmentedColormap
@@ -133,10 +251,54 @@ def plot_cov_array(cova, covb=None, k=None, kmax=None, num_multipoles=3, label_a
     return fig, axes, colorbar
 
 def plot_cov(cova, covb=None, kmax=None, label_a=None, label_b=None, vmin=-1, vmax=1, num_ticks=5, **kwargs):
+    '''Plot the correlation matrix of a Covariance object.
+    
+    Parameters
+    ----------
+    cova : Covariance
+        Covariance matrix.
+    covb : Covariance, optional
+        Second covariance matrix to plot. Default is None.
+    kmax : float, optional
+        Maximum k to plot. Default is None.
+    label_a : str, optional
+        Label for the first covariance matrix. Default is None.
+    label_b : str, optional
+        Label for the second covariance matrix. Default is None.
+    vmin : float, optional
+        Minimum value of the colorbar. Default is -1.
+    vmax : float, optional
+        Maximum value of the colorbar. Default is 1.
+    num_ticks : int, optional
+        Number of ticks on the axes. Default is 5.
+    **kwargs
+        Additional arguments to pass to matplotlib's imshow.
+
+    Returns
+    -------
+    fig, axes, colorbar : matplotlib figure, axes, and colorbar
+    '''
     return plot_cov_array(cova=cova.cov, covb=covb.cov if covb is not None else None, k=cova.kmid, kmax=kmax, label_a=None, label_b=None, vmin=-1, vmax=1, num_ticks=5, **kwargs)
 
 def plot_cov_diag(cov, k=None, label=None, klim=None, colors=['k', 'r', 'g', 'b'], portrait=False):
+    '''Plot the diagonal of a MultipoleCovariance object.
+
+    Parameters
+    ----------
+    cov : MultipoleCovariance or list of MultipoleCovariance
+        Covariance matrix.
+    k : array_like, optional
+        k bins of the covariance matrix. Default is None.
+    label : str or list of str, optional
+        Label for the covariance matrix. Default is None.
+    klim : tuple, optional
+        k limits to plot. Default is None.
+    colors : list of str, optional
     
+    Returns
+    -------
+    fig, axes1, axes2 : matplotlib figure and axes (for main plot and fractional difference)
+    '''
     if not isinstance(cov, collections.abc.Sequence):
         cov = [cov]
         
@@ -236,7 +398,29 @@ def _get_ridgeplot_line(cov, center, nrange):
 
 
 def ridgeplot_cov(cov, k=None, step=1, nrange=5, figsize=(5,25), logplot=False, hspace=-0.4):
+    '''Plot rows of a covariance matrix as ridgeplots.
     
+    Parameters
+    ----------
+    cov : array_like
+        Covariance matrix.
+    k : array_like, optional
+        k bins of the covariance matrix. Default is None.
+    step : int, optional
+        Step between the rows of the covariance matrix. Default is 1.
+    nrange : int, optional
+        Number of bins to plot on each side of the diagonal. Default is 5.
+    figsize : tuple, optional
+        Figure size. Default is (5,25).
+    logplot : bool, optional
+        If True, plot the y axis in log scale. Default is False.
+    hspace : float, optional
+        Spacing between the rows. Default is -0.4.
+    
+    Returns
+    -------
+    fig, axes : matplotlib figure and axes
+    '''
     if not isinstance(cov, collections.abc.Sequence):
         cov = [cov]
     

@@ -1,3 +1,14 @@
+"""Module containing classes that represent the geometry to be used in the covariance calculation.
+
+Classes
+-------
+Geometry
+    Abstract class that defines the interface for the geometry classes.
+BoxGeometry
+    Class that represents the geometry of a periodic cubic box.
+SurveyGeometry
+    Class that represents the geometry of a survey in cut-sky.
+"""
 
 from abc import ABC
 import itertools as itt
@@ -22,6 +33,26 @@ class Geometry(ABC):
 
 
 class BoxGeometry(Geometry):
+    '''Class that represents the geometry of a periodic cubic box.
+    
+    Attributes
+    ----------
+    BoxSize : float
+        Size of the box.
+    Nmesh : int
+        Number of mesh points in each dimension.
+    alpha : float
+        Factor to multiply the number of galaxies in the box.
+    
+    Methods
+    -------
+    set_boxsize
+        Set the size of the box.
+    set_nmesh
+        Set the number of mesh points in each dimension.
+    set_alpha
+        Set the factor to multiply the number of galaxies in the box.
+    '''
     def __init__(self, volume=None, nbar=None):
         self._volume = volume
         self._nbar = nbar
@@ -47,10 +78,22 @@ class BoxGeometry(Geometry):
 
     @property
     def shotnoise(self):
+        '''Estimates the Poissonian shotnoise of the sample as 1/nbar.
+        
+        Returns
+        -------
+        float
+            Poissonian shotnoise of the sample = 1/nbar.'''
         return 1/self.nbar
 
     @shotnoise.setter
     def shotnoise(self, shotnoise):
+        '''Sets the Poissonian shotnoise of the sample and nbar = 1/shotnoise.
+        
+        Parameters
+        ----------
+        shotnoise : float
+            Shotnoise of the sample.'''
         self.nbar = 1./shotnoise
 
     @property
@@ -75,6 +118,21 @@ class BoxGeometry(Geometry):
         return np.average(self.zmid, weights=self.nz * bin_volume)
 
     def set_effective_volume(self, zmin, zmax, fsky=None):
+        '''Set the effective volume of the box.
+        
+        Parameters
+        ----------
+        zmin : float
+            Minimum redshift of the sample.
+        zmax : float
+            Maximum redshift of the sample.
+        fsky : float, optional
+            Fraction of the sky covered by the sample. If not given, the current value of fsky is used.
+            
+        Returns
+        -------
+        float
+            Effective volume of the box.'''
 
         if fsky is not None:
             self.fsky = fsky
@@ -89,6 +147,18 @@ class BoxGeometry(Geometry):
         return self.volume
 
     def set_nz(self, zedges, nz, *args, **kwargs):
+        '''Set the effective volume and number density of the box based on the
+        redshift distribution of the sample.
+
+        Parameters
+        ----------
+        zedges : array_like
+            Array of redshift bin edges.
+        nz : array_like
+            Array of redshift distribution of the sample.
+        *args, **kwargs
+            Arguments and keyword arguments to be passed to set_effective_volume.
+        '''
         assert len(zedges) == len(nz) + \
             1, "Length of zedges should equal length of nz + 1."
 
@@ -106,6 +176,16 @@ class BoxGeometry(Geometry):
         print(f'Estimated nbar: {self.nbar:.3e} (Mpc/h)^-3')
 
     def set_randoms(self, randoms, alpha=1.0):
+        '''Estimates the effective volume and number density of the box based on a
+        provided catalog of randoms.
+        
+        Parameters
+        ----------
+        randoms : array_like
+            Catalog of randoms.
+        alpha : float, optional
+            Factor to multiply the number density of the randoms. Default is 1.0.
+        '''
         import healpy as hp
         from nbodykit.algorithms import zhist
 
@@ -150,38 +230,92 @@ class BoxGeometry(Geometry):
 
 
 class SurveyGeometry(Geometry, base.FourierBinned):
+    '''Class that represents the geometry of a survey in cut-sky.
+    
+    Attributes
+    ----------
+    random_catalog : nbodykit.catalog.CatalogSource
+        Catalog of randoms.
+    Nmesh : int
+        Number of mesh points in each dimension to be used in the calculation of the FFTs.
+    BoxSize : float
+        Size of the box.
+    alpha : float
+        Factor to multiply the number density of the randoms. Default is 1.0.
+    delta_k_max : int
+        Number of k bins to be calculated each side of the diagonal.
+    kmodes_sampled : int
+        Number of k modes to be sampled in the calculation of the window kernels.
+    mesh_kwargs : dict
+        Arguments to be passed to nbodykit.mesh.MeshSource.to_mesh.
+    tqdm : callable
+        Function to be used for progress bar. Default is tqdm from tqdm package.
+    
+    Methods
+    -------
+    set_kbins(kmin, kmax, dk)
+        Set the k bins to be used in the calculation of the covariance.
+    compute_window_kernels
+        Compute the window kernels to be used in the calculation of the covariance.
+    save_window_kernels(filename)
+        Save the window kernels to a file.
+    load_window_kernels(filename)
+        Load the window kernels from a file.
+    
+    Notes
+    -----
+    The window kernels are computed using the method described in [1]_.
+    
+    References
+    ----------
+    .. [1] https://arxiv.org/abs/1910.02914
+    '''
 
-    def __init__(self, random_catalog=None, Nmesh=None, BoxSize=None, kmax_mask=0.05, k2_range=3, kmodes_sampled=250, alpha=1.0, mesh_kwargs=None, tqdm=shell_tqdm):
+    def __init__(self, random_catalog=None, Nmesh=None, BoxSize=None, kmax_mask=0.05, delta_k_max=3, kmodes_sampled=250, alpha=1.0, mesh_kwargs=None, tqdm=shell_tqdm):
 
-        assert Nmesh is None or Nmesh % 2 == 1, 'Please, use an odd integer for Nmesh.'
+        # assert Nmesh is None or Nmesh % 2 == 1, 'Please, use an odd integer for Nmesh.'
 
         base.FourierBinned.__init__(self)
 
+        if random_catalog is not None:
+            self._randoms = random_catalog
+
+            self._randoms['OriginalPosition'] = self._randoms['Position']
+            self._randoms['Position'] -= np.array(survey_center)
+
+            self._ngals = self.randoms.size * self.alpha
+
+            pos_max = np.max(random_catalog['Position'], axis=0).compute()
+            pos_min = np.min(random_catalog['Position'], axis=0).compute()
+
+            survey_center = (pos_max + pos_min)/2
+            print(f'Survey center is at xyz = {survey_center}. Centering coordinates.')
+        else:
+            self._ngals = None
+
         if BoxSize is None and random_catalog is not None:
             # Estimate BoxSize from random catalog
-            self.BoxSize = [(random_catalog['Position'][:,i].max() - random_catalog['Position'][:,i].min()).compute() for i in range(3)]
-            print(f'Using BoxSize = {self.BoxSize} estimated from the randoms.')
+            self.BoxSize = max(pos_max - pos_min)
+            print(f'Box size estimated from the randoms is {pos_max - pos_min}. Using BoxSize = {self.BoxSize}.')
         elif np.ndim(BoxSize) == 0:
-            self.BoxSize = 3*[BoxSize]
-        elif np.ndim(BoxSize) == 1:
             self.BoxSize = BoxSize
-
-        self.Lbox = min(self.BoxSize)
+        elif np.ndim(BoxSize) == 1:
+            self.BoxSize = max(BoxSize)
 
         if Nmesh is None:
             # Pick odd value that will give at least k_mask = kmax_mask in the FFTs
-            Nmesh = int(kmax_mask*self.Lbox/np.pi)//2 * 2 + 1
-            print(f'Using Nmesh = {Nmesh} for the window FFTs.')
+            Nmesh = int(kmax_mask*self.BoxSize/np.pi)//2 * 2 + 1
+            print(f'Using Nmesh = {BoxSize} for the window FFTs.')
 
-        k_nyquist = np.pi*Nmesh/self.Lbox
+        k_nyquist = np.pi*Nmesh/self.BoxSize
         print(f'Nyquist wavelength of window FFTs = {k_nyquist}.')
 
         if k_nyquist < kmax_mask:
-            print('WARNING: Nyquist frequency smaller than required kmax_mask.')
+            print(f'WARNING: Nyquist frequency smaller than required kmax_mask = {kmax_mask}.')
 
         self.Nmesh = Nmesh
         self.alpha = alpha
-        self.k2_range = k2_range
+        self.delta_k_max = delta_k_max
         self.kmodes_sampled = kmodes_sampled
 
         self.tqdm = tqdm
@@ -197,15 +331,6 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         if mesh_kwargs is not None:
             self._mesh_kwargs.update(mesh_kwargs)
 
-        if random_catalog is not None:
-            self._randoms = random_catalog
-
-            self._randoms['RelativePosition'] = self._randoms['Position']
-            self._randoms['Position'] += np.array(self.BoxSize)/2
-
-            self._ngals = self.randoms.size * self.alpha
-        else:
-            self._ngals = None
 
         self._W = {}
         self._I = {}
@@ -216,6 +341,18 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         #     self._I[f'{i}{j}'] = (self._randoms[f'W{i}{j}'].sum() * self.alpha).compute()
 
     def W_cat(self, W):
+        '''Adds a column to the random catalog with the window function Wij.
+        
+        Parameters
+        ----------
+        W : str
+            Window function label.
+        
+        Returns
+        -------
+        array_like
+            Window function Wij.
+        '''
         w = W.lower().replace("w", "")
 
         if f'W{w}' not in self._randoms.columns:
@@ -224,6 +361,18 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         return self._randoms[f'W{w}']
 
     def I(self, W):
+        '''Computes the integral Iij of the window function Wij.
+        
+        Parameters
+        ----------
+        W : str
+            Window function label.
+            
+        Returns
+        -------
+        float
+            Integral Iij of the window function Wij.
+        '''
         w = W.lower().replace("i", "").replace("w", "")
         if w not in self._I:
             self.W_cat(w)
@@ -231,6 +380,18 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         return self._I[w]
 
     def W(self, W):
+        '''Returns FFT of the window function Wij. If it has not been computed yet, it is computed.
+        
+        Parameters
+        ----------
+        W : str
+            Window function label.
+        
+        Returns
+        -------
+        array_like
+            FFT of the window function Wij.
+        '''
         w = W.lower().replace("w", "")
         if w not in self._W:
             self.W_cat(w)
@@ -239,24 +400,42 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         return self._W[w]
 
     def compute_cartesian_ffts(self, Wij=('W12', 'W22')):
+        '''Computes the FFTs of the window functions Wij.
+        
+        Parameters
+        ----------
+        Wij : array_like, optional
+            List of window function labels. Default is ["W12", "W22"].
+        '''
         [self.W(w) for w in Wij]
 
     def compute_cartesian_fft(self, W):
-
+        '''Computes the FFT of the window function Wij.
+        
+        Parameters
+        ----------
+        W : str
+            Window function label.
+        '''
         w = W.lower().replace('w', '')
 
         self.W_cat(w)
 
         mesh_kwargs = self._mesh_kwargs
 
-        x = self.randoms['RelativePosition'].T
+        x = self.randoms['Position'].T
 
         with self.tqdm(total=22, desc=f'Computing moments of W{w}') as pbar:
             self.set_cartesian_fft(f'W{w}', self._format_fft(self.randoms.to_mesh(
                 value=f'W{w}', **mesh_kwargs).paint(mode='complex'), w))
-            Ww = self.W(w)[self.Nmesh//2, self.Nmesh//2, self.Nmesh//2].real
+            
+            # Check if zero mode of FFT Wij is consistent with integral Iij
+            center = self.Nmesh//2
+            if self.Nmesh % 2 == 0:
+                center -= 1
+            Ww = self.W(w)[center, center, center]
             Iw = self.I(w)
-            assert np.isclose(Ww, Iw, rtol=1e-2), f'Inconsistency between W{w}_0 = {Ww} and I{w} = {Iw}.'
+            assert np.isclose(Ww.real, Iw, rtol=1e-2) and Ww.imag == 0, f'Inconsistency between W{w}_0 = {Ww} and I{w} = {Iw}.'
 
             pbar.update(1)
 
@@ -278,25 +457,25 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
                 pbar.update(1)
 
-    def compute_cartesian_fft_single_mesh(self, W):
+    # def compute_cartesian_fft_single_mesh(self, W):
 
-        w = W.replace('W', '').replace('w', '')
-        self.W_cat(w)
+    #     w = W.replace('W', '').replace('w', '')
+    #     self.W_cat(w)
 
-        mesh_kwargs = self._mesh_kwargs
+    #     mesh_kwargs = self._mesh_kwargs
 
-        real_field = self.randoms.to_mesh(
-            value='W12', **mesh_kwargs).paint(mode='real')
+    #     real_field = self.randoms.to_mesh(
+    #         value='W12', **mesh_kwargs).paint(mode='real')
 
-        self._W[w] = self._format_fft(real_field.r2c(), w)
+    #     self._W[w] = self._format_fft(real_field.r2c(), w)
 
-        for (i, i_label), (j, j_label) in itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=2):
-            self._W[f'{w}{i_label}{j_label}'] = self._format_fft(real_field.apply(
-                lambda x, v: np.nan_to_num(v*x[i]*x[j]/(x[0]**2 + x[1]**2 + x[2]**2)), kind='relative').r2c(), w)
+    #     for (i, i_label), (j, j_label) in itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=2):
+    #         self._W[f'{w}{i_label}{j_label}'] = self._format_fft(real_field.apply(
+    #             lambda x, v: np.nan_to_num(v*x[i]*x[j]/(x[0]**2 + x[1]**2 + x[2]**2)), kind='relative').r2c(), w)
 
-        for (i, i_label), (j, j_label), (k, k_label), (l, l_label) in itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=4):
-            self._W[f'{w}{i_label}{j_label}{k_label}{l_label}'] = self._format_fft(real_field.apply(
-                lambda x, v: np.nan_to_num(v*x[i]*x[j]*x[k]*x[l]/(x[0]**2 + x[1]**2 + x[2]**2)**2), kind='relative').r2c(), w)
+    #     for (i, i_label), (j, j_label), (k, k_label), (l, l_label) in itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=4):
+    #         self._W[f'{w}{i_label}{j_label}{k_label}{l_label}'] = self._format_fft(real_field.apply(
+    #             lambda x, v: np.nan_to_num(v*x[i]*x[j]*x[k]*x[l]/(x[0]**2 + x[1]**2 + x[2]**2)**2), kind='relative').r2c(), w)
 
     def _format_fft(self, fourier, window):
 
@@ -316,6 +495,15 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         return np.conj(fourier_cut) if window == '12' else fourier_cut
 
     def set_cartesian_fft(self, label, W):
+        '''Set the FFT of the window function Wij.
+        
+        Parameters
+        ----------
+        label : str
+            Window function label.
+        W : array_like
+            FFT of the window function Wij.
+        '''
         w = label.lower().replace('w', '')
         if w not in self._W:
             # Create object proper for multiprocessing
@@ -325,10 +513,24 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self._W[w][:, :, :] = W
 
     def save_cartesian_ffts(self, filename):
+        '''Save the FFTs of the window functions Wij to a file.
+        
+        Parameters
+        ----------
+        filename : str
+            Name of the file to save the FFTs of the window functions Wij.
+        '''
         np.savez(filename if filename.strip()[-4:] == '.npz' else f'{filename}.npz', **{f'W{k.replace("W","")}': self._W[k] for k in self._W}, **{
                  f'I{k.replace("I","")}': self._I[k] for k in self._I}, BoxSize=self.BoxSize, Nmesh=self.Nmesh, alpha=self.alpha)
 
     def load_cartesian_ffts(self, filename):
+        '''Load the FFTs of the window functions Wij from a file.
+        
+        Parameters
+        ----------
+        filename : str
+            Name of the file to load the FFTs of the window functions Wij from.
+        '''
         with np.load(filename, mmap_mode='r') as data:
 
             self.BoxSize = data['BoxSize']
@@ -362,30 +564,48 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         return len(self.kmid)
 
     def get_window_kernels(self):
+        '''Returns the window kernels to be used in the calculation of the covariance.
+        
+        Returns
+        -------
+        array_like
+            Window kernels to be used in the calculation of the covariance.
+        '''
         if not (hasattr(self, 'WinKernel') and self.WinKernel is not None):
             self.compute_window_kernels()
         return self.WinKernel
 
-    # As the window falls steeply with k, only low-k regions are needed for the calculation.
-    # Therefore, high-k modes in the FFTs can be discarted
     def compute_window_kernels(self):
+        '''Computes the window kernels to be used in the calculation of the covariance.
+        
+        Notes
+        -----
+        The window kernels are computed using the method described in [1]_.
+        
+        References
+        ----------
+        .. [1] https://arxiv.org/abs/1910.02914
+        '''
 
-        kfun = 2*np.pi/self.Lbox
+        kfun = 2*np.pi/self.BoxSize
 
+        # sample kmodes from each k1 bin
         kmodes = np.array([[utils.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(
             self.kmodes_sampled)] for kmin, kmax in zip(self.kedges[:-1], self.kedges[1:])])
+        
+        # Note: as the window falls steeply with k, only low-k regions are needed for the calculation.
+        # Therefore, high-k modes in the FFTs can be discarted
 
         self.compute_cartesian_fft('W12')
         self.compute_cartesian_fft('W22')
 
         init_params = {
             'I22': self.I('22'),
-            'Volume': np.prod(np.array(self.BoxSize, dtype=float)),
-            'kfun': 2*np.pi/self.Lbox,
+            'BoxSize': self.BoxSize,
             'kbins': self.kbins,
             'dk': self.dk,
             'Nmesh': self.Nmesh,
-            'k2_range': self.k2_range,
+            'delta_k_max': self.delta_k_max,
             'kedges': self.kedges
         }
 
@@ -405,6 +625,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         else:
             num_threads = os.cpu_count()
 
+        # Calls the function _compute_window_kernel_row in parallel for each k1 bin
         with mp.Pool(processes=num_threads, initializer=init_worker, initargs=[*[self._W[w] for w in W_LABELS], init_params]) as pool:
             self.WinKernel = np.array(list(self.tqdm(pool.imap(self._compute_window_kernel_row, enumerate(
                 kmodes)), total=self.kbins, desc="Computing window kernels")))
@@ -414,19 +635,33 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         #     for Nbin in self.tqdm(range(self.kbins), total=self.kbins, desc="Computing window kernels")])
 
     def save_window_kernels(self, filename):
+        '''Save the window kernels to a file.
+        
+        Parameters
+        ----------
+        filename : str
+            Name of the file to save the window kernels.'''
         np.savez(filename if filename.strip()
                  [-4:] == '.npz' else f'{filename}.npz', WinKernel=self.WinKernel, kmin=self.kmin, kmax=self.kmax, dk=self.dk)
 
     def load_window_kernels(self, filename):
+        '''Load the window kernels from a file.
+        
+        Parameters
+        ----------
+        filename : str
+            Name of the file to load the window kernels from.
+        '''
         with np.load(filename, mmap_mode='r') as data:
             self.WinKernel = data['WinKernel']
             self.set_kbins(data['kmin'], data['kmax'], data['dk'])
 
     @staticmethod
     def _compute_window_kernel_row(args):
+        '''Computes a row of the window kernels. This function is called in parallel for each k1 bin.'''
         # Gives window kernels for L=0,2,4 auto and cross covariance (instead of only L=0 above)
 
-        # Returns an array with [2*k2_range+1,15,6] dimensions.
+        # Returns an array with [2*delta_k_max+1,15,6] dimensions.
         #    The first dim corresponds to the k-bin of k2
         #    (only 3 bins on each side of diagonal are included as the Gaussian covariance drops quickly away from diagonal)
 
@@ -435,12 +670,12 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         #    The last dim corresponds to multipoles: [L0xL0,L2xL2,L4xL4,L2xL0,L4xL0,L4xL2]
 
-        Nbin, Bin_kmodes = args
+        k1_bin_index, Bin_kmodes = args
 
         I22 = shared_params['I22']
 
-        box_volume = shared_params['Volume']
-        kfun = shared_params['kfun']
+        BoxSize = shared_params['BoxSize']
+        kfun = 2*np.pi/BoxSize,
 
         nBins = shared_params['kbins']
         kBinWidth = shared_params['dk']
@@ -450,13 +685,13 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         W = shared_w
 
-        Bin_ModeNum = utils.nmodes(box_volume, kedges[:-1], kedges[1:])
+        Bin_ModeNum = utils.nmodes(BoxSize**3, kedges[:-1], kedges[1:])
 
         # The Gaussian covariance drops quickly away from diagonal.
-        # Only k2_range points to each side of the diagonal are calculated.
-        k2_range = shared_params['k2_range']
+        # Only delta_k_max points to each side of the diagonal are calculated.
+        delta_k_max = shared_params['delta_k_max']
 
-        avgW00 = np.zeros((2*k2_range+1, 15), dtype='<c8')
+        avgW00 = np.zeros((2*delta_k_max+1, 15), dtype='<c8')
         avgW22 = avgW00.copy()
         avgW44 = avgW00.copy()
         avgW20 = avgW00.copy()
@@ -475,7 +710,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         for ik1x, ik1y, ik1z, rk1 in Bin_kmodes:
 
-            if rk1 == 0.:
+            if rk1 <= 1e-10:
                 k1xh = 0
                 k1yh = 0
                 k1zh = 0
@@ -492,10 +727,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             rk2 = np.sqrt(k2xh**2 + k2yh**2 + k2zh**2)
 
             # to decide later which shell the k2 mode belongs to
-            sort = (rk2*kfun/kBinWidth).astype(int) - Nbin
-            ind = (rk2 == 0)
-            if ind.any() > 0:
-                rk2[ind] = 1e10
+            k2_bin_index = (rk2*kfun/kBinWidth).astype(int)
+
+            rk2[rk2 <= 1e-10] = np.inf
 
             k2xh /= rk2
             k2yh /= rk2
@@ -733,50 +967,48 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                             + W_k2L4*W12_k1L4_k2L2 + (2/7.*W_k1L4_k2L2 + 20/77.*W_k1L4_k2L4)*W12_L0),
 
                        np.conj(W12_k1L4_k2L2)*W12_L0+np.conj(W12_k1L4)*W12_k2L2]  # 1/(nbar)^2
+            
+            for delta_k in range(-delta_k_max, delta_k_max + 1):
+                # k2_bin_index has shape (Nmesh, Nmesh, Nmesh)
+                # k1_bin_index is a scalar
+                modes = (k2_bin_index - k1_bin_index == delta_k)
 
-            for i in range(-k2_range, k2_range+1):
-                ind = (sort == i)
-                for j in range(15):
-                    avgW00[i+3, j] += np.sum(C00exp[j][ind])
-                    avgW22[i+3, j] += np.sum(C22exp[j][ind])
-                    avgW44[i+3, j] += np.sum(C44exp[j][ind])
-                    avgW20[i+3, j] += np.sum(C20exp[j][ind])
-                    avgW40[i+3, j] += np.sum(C40exp[j][ind])
-                    avgW42[i+3, j] += np.sum(C42exp[j][ind])
+                # Iterating over terms (m,m') that will multiply P_m(k1)*P_m'(k2) in the sum
+                for term in range(15):
+                    avgW00[delta_k + delta_k_max, term] += np.sum(C00exp[term][modes])
+                    avgW22[delta_k + delta_k_max, term] += np.sum(C22exp[term][modes])
+                    avgW44[delta_k + delta_k_max, term] += np.sum(C44exp[term][modes])
+                    avgW20[delta_k + delta_k_max, term] += np.sum(C20exp[term][modes])
+                    avgW40[delta_k + delta_k_max, term] += np.sum(C40exp[term][modes])
+                    avgW42[delta_k + delta_k_max, term] += np.sum(C42exp[term][modes])
 
-        for i in range(0, 2*k2_range+1):
-            if (i+Nbin-k2_range >= nBins or i+Nbin-k2_range < 0):
-                avgW00[i] *= 0
-                avgW22[i] *= 0
-                avgW44[i] *= 0
-                avgW20[i] *= 0
-                avgW40[i] *= 0
-                avgW42[i] *= 0
+        for i in range(0, 2*delta_k_max + 1):
+            if (i + k1_bin_index - delta_k_max >= nBins or i + k1_bin_index - delta_k_max < 0):
+                avgW00[i] = 0
+                avgW22[i] = 0
+                avgW44[i] = 0
+                avgW20[i] = 0
+                avgW40[i] = 0
+                avgW42[i] = 0
             else:
-                avgW00[i] = avgW00[i] / \
-                    (kmodes_sampled*Bin_ModeNum[Nbin+i-k2_range]*I22**2)
-                avgW22[i] = avgW22[i] / \
-                    (kmodes_sampled*Bin_ModeNum[Nbin+i-k2_range]*I22**2)
-                avgW44[i] = avgW44[i] / \
-                    (kmodes_sampled*Bin_ModeNum[Nbin+i-k2_range]*I22**2)
-                avgW20[i] = avgW20[i] / \
-                    (kmodes_sampled*Bin_ModeNum[Nbin+i-k2_range]*I22**2)
-                avgW40[i] = avgW40[i] / \
-                    (kmodes_sampled*Bin_ModeNum[Nbin+i-k2_range]*I22**2)
-                avgW42[i] = avgW42[i] / \
-                    (kmodes_sampled*Bin_ModeNum[Nbin+i-k2_range]*I22**2)
+                avgW00[i] /= kmodes_sampled*Bin_ModeNum[k1_bin_index + i - delta_k_max]*I22**2
+                avgW22[i] /= kmodes_sampled*Bin_ModeNum[k1_bin_index + i - delta_k_max]*I22**2
+                avgW44[i] /= kmodes_sampled*Bin_ModeNum[k1_bin_index + i - delta_k_max]*I22**2
+                avgW20[i] /= kmodes_sampled*Bin_ModeNum[k1_bin_index + i - delta_k_max]*I22**2
+                avgW40[i] /= kmodes_sampled*Bin_ModeNum[k1_bin_index + i - delta_k_max]*I22**2
+                avgW42[i] /= kmodes_sampled*Bin_ModeNum[k1_bin_index + i - delta_k_max]*I22**2
 
-        def l_factor(l1, l2): return (2*l1+1) * \
-            (2*l2+1) * (2 if 0 in (l1, l2) else 1)
+        def l_factor(l1, l2): return (2*l1 + 1) * \
+            (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
 
-        avgWij = np.zeros((2*k2_range+1, 15, 6))
+        avgWij = np.zeros((2*delta_k_max+1, 15, 6))
 
-        avgWij[:, :, 0] = l_factor(0, 0)*np.real(avgW00)
-        avgWij[:, :, 1] = l_factor(2, 2)*np.real(avgW22)
-        avgWij[:, :, 2] = l_factor(4, 4)*np.real(avgW44)
-        avgWij[:, :, 3] = l_factor(2, 0)*np.real(avgW20)
-        avgWij[:, :, 4] = l_factor(4, 0)*np.real(avgW40)
-        avgWij[:, :, 5] = l_factor(4, 2)*np.real(avgW42)
+        avgWij[:, :, 0] = l_factor(0,0)*np.real(avgW00)
+        avgWij[:, :, 1] = l_factor(2,2)*np.real(avgW22)
+        avgWij[:, :, 2] = l_factor(4,4)*np.real(avgW44)
+        avgWij[:, :, 3] = l_factor(2,0)*np.real(avgW20)
+        avgWij[:, :, 4] = l_factor(4,0)*np.real(avgW40)
+        avgWij[:, :, 5] = l_factor(4,2)*np.real(avgW42)
 
         return avgWij
 

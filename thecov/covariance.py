@@ -1,11 +1,25 @@
+"""Module for computing the covariance matrix of power spectrum multipoles.
+
+This module currently contains only the GaussianCovariance class, which is used
+to compute the Gaussian covariance matrix of power spectrum multipoles in a given geometry.
+
+Example
+-------
+>>> import thecov.covariance
+>>> import thecov.geometry
+>>> geometry = thecov.geometry.SurveyGeometry(random_catalog=randoms, alpha=1/10)
+>>> covariance = thecov.covariance.GaussianCovariance(geometry)
+>>> covariance.set_kbins(kmin=0, kmax=0.25, dk=0.005)
+>>> covariance.set_pk(P0, 0, has_shotnoise=False)
+>>> covariance.set_pk(P2, 2)
+>>> covariance.set_pk(P4, 4)
+>>> covariance.compute_covariance()
+"""
 
 import numpy as np
 import itertools as itt
-from scipy import interpolate, integrate
 
-from tqdm import tqdm
-
-from . import trispectrum, base, geometry
+from . import base, geometry
 
 
 class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
@@ -142,9 +156,9 @@ class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
 
         WinKernel = self.geometry.get_window_kernels()
 
-        # k2_range off-diagonal elements of the covariance
+        # delta_k_max off-diagonal elements of the covariance
         # matrix will be computed each side of the diagonal
-        k2_range = WinKernel.shape[1]//2
+        delta_k_max = WinKernel.shape[1]//2
 
         # Number of k bins
         kbins = self.kbins
@@ -157,28 +171,28 @@ class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
         cov = np.zeros((kbins, kbins, 6))
 
         for ki in range(kbins):
-            # Iterate k2_range bins either side of the diagonal
-            for kj in range(max(ki-k2_range, 0), min(ki+k2_range+1, kbins)):
+            # Iterate delta_k_max bins either side of the diagonal
+            for kj in range(max(ki - delta_k_max, 0), min(ki + delta_k_max + 1, kbins)):
                 # Relative index of k2 for WinKernel elements
-                j = kj - ki + k2_range
+                delta_k = kj - ki + delta_k_max
 
                 cov[ki][kj] = \
-                    WinKernel[ki, j, 0]*P0[ki]*P0[kj] + \
-                    WinKernel[ki, j, 1]*P0[ki]*P2[kj] + \
-                    WinKernel[ki, j, 2]*P0[ki]*P4[kj] + \
-                    WinKernel[ki, j, 3]*P2[ki]*P0[kj] + \
-                    WinKernel[ki, j, 4]*P2[ki]*P2[kj] + \
-                    WinKernel[ki, j, 5]*P2[ki]*P4[kj] + \
-                    WinKernel[ki, j, 6]*P4[ki]*P0[kj] + \
-                    WinKernel[ki, j, 7]*P4[ki]*P2[kj] + \
-                    WinKernel[ki, j, 8]*P4[ki]*P4[kj] + \
+                    WinKernel[ki, delta_k, 0]*P0[ki]*P0[kj] + \
+                    WinKernel[ki, delta_k, 1]*P0[ki]*P2[kj] + \
+                    WinKernel[ki, delta_k, 2]*P0[ki]*P4[kj] + \
+                    WinKernel[ki, delta_k, 3]*P2[ki]*P0[kj] + \
+                    WinKernel[ki, delta_k, 4]*P2[ki]*P2[kj] + \
+                    WinKernel[ki, delta_k, 5]*P2[ki]*P4[kj] + \
+                    WinKernel[ki, delta_k, 6]*P4[ki]*P0[kj] + \
+                    WinKernel[ki, delta_k, 7]*P4[ki]*P2[kj] + \
+                    WinKernel[ki, delta_k, 8]*P4[ki]*P4[kj] + \
                     1.01*(
-                        WinKernel[ki, j, 9]*(P0[ki] + P0[kj])/2. +
-                        WinKernel[ki, j, 10]*P2[ki] + WinKernel[ki, j, 11]*P4[ki] +
-                        WinKernel[ki, j, 12]*P2[kj] +
-                    WinKernel[ki, j, 13]*P4[kj]
+                        WinKernel[ki, delta_k, 9]*(P0[ki] + P0[kj])/2. +
+                        WinKernel[ki, delta_k, 10]*P2[ki] + WinKernel[ki, delta_k, 11]*P4[ki] +
+                        WinKernel[ki, delta_k, 12]*P2[kj] +
+                    WinKernel[ki, delta_k, 13]*P4[kj]
                 ) + \
-                    1.01**2 * WinKernel[ki, j, 14]
+                    1.01**2 * WinKernel[ki, delta_k, 14]
 
         self.set_ell_cov(0, 0, cov[:, :, 0])
         self.set_ell_cov(2, 2, cov[:, :, 1])

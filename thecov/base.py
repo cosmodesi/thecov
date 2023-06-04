@@ -1,3 +1,14 @@
+'''Module containing basic classes to deal with covariance matrices.
+
+Classes
+-------
+Covariance
+    A class to represent a covariance matrix. Implements basic operations such as correlation matrix computation, etc.
+MultipoleCovariance
+    A class to represent a covariance matrix for an observable that's splitted in multipoles (ell1,ell2).
+FourierBinned
+    A class that implements k-binning of an observable.
+'''
 
 import itertools as itt
 import numpy as np
@@ -448,6 +459,11 @@ class FourierBinned:
     nmodes: numpy.ndarray, optional
         The number of modes to be used in the calculation. It is an optional parameter.
         If omitted, it is calculated from the volume of spherical shells.
+
+    Methods
+    -------
+    set_kbins
+        This function defines the k-bins. Only linear binning is supported.
     '''
 
     def set_kbins(self, kmin, kmax, dk, nmodes=None):
