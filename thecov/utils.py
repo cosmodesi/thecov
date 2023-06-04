@@ -196,13 +196,15 @@ def plot_cov_diag(cov, k=None, label=None, klim=None, colors=['k', 'r', 'g', 'b'
             
         ax1.set_ylabel(r"$C_{l1l2}(k,k)/P_0(k)^2$".replace('l1', str(l1)).replace('l2', str(l2)))
         ax2.set_xlabel('k [h/Mpc]')
-        
-        ax2.axhline(0, c=colors[0], ls='dashed')
 
-        frac_lim = 3*np.std((a/b-1)[2:])
-        if(np.isnan(frac_lim) or np.isinf(frac_lim)):
-            frac_lim = 1.0
-        ax2.set_ylim(-frac_lim, frac_lim)
+        if len(cov) > 1:
+        
+            ax2.axhline(0, c=colors[0], ls='dashed')
+
+            frac_lim = 3*np.std((a/b-1)[2:])
+            if(np.isnan(frac_lim) or np.isinf(frac_lim)):
+                frac_lim = 1.0
+            ax2.set_ylim(-frac_lim, frac_lim)
 
         ax1.set_xticks([])
 
@@ -223,7 +225,7 @@ def plot_cov_diag(cov, k=None, label=None, klim=None, colors=['k', 'r', 'g', 'b'
 
 def _get_ridgeplot_line(cov, center, nrange):
     assert cov.ndim == 2
-    y = cov[center, max(0, center - nrange):min(cov.shape[0], center + nrange)]
+    y = cov[center, max(0, center - nrange):min(cov.shape[0], center + nrange + 1)]
 
     start = nrange - center if nrange > center else 0
     end = start + len(y)
@@ -233,7 +235,7 @@ def _get_ridgeplot_line(cov, center, nrange):
     return x,y
 
 
-def ridgeplot_cov(cov, k=None, step=1, nrange=10, figsize=(5,25), logplot=False):
+def ridgeplot_cov(cov, k=None, step=1, nrange=5, figsize=(5,25), logplot=False, hspace=-0.4):
     
     if not isinstance(cov, collections.abc.Sequence):
         cov = [cov]
@@ -248,14 +250,16 @@ def ridgeplot_cov(cov, k=None, step=1, nrange=10, figsize=(5,25), logplot=False)
             ax.semilogy(x,y) if logplot else ax.plot(x,y)
             ax.scatter(x,y,s=5)
 
+        ax.axvline(nrange, ls='dotted', c='k', alpha=0.5)
+
         if k is not None:
-            ax.annotate(f'{k[i]:.4f}', xy = (2*nrange, min(y)))
+            ax.annotate(f'{k[i]:.4f}', xy = (2*nrange + 1, min(y)))
         
-        ax.set_xlim((0,2*nrange))
+        ax.set_xlim((0,2*nrange + 1))
         
         # remove borders, axis ticks, and labels
         ax.axis('off')
 
-    plot.subplots_adjust(hspace=-0.7)
+    plot.subplots_adjust(hspace=hspace)
 
     return fig, axes
