@@ -6,6 +6,8 @@ import matplotlib.pyplot as plot
 
 import collections.abc
 
+__all__ = ['triangle_cov', 'cov2cor', 'plot_cov_array', 'plot_cov', 'plot_cov_diag', 'ridgeplot_cov']
+
 def r2c_to_c2c_3d(fourier):
     """Completes a 3D Fourier array generated using PFFT's r2c method with the elements
     that are omitted due to the Hermitian symmetry of the Fourier transform.

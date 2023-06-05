@@ -21,6 +21,7 @@ import itertools as itt
 
 from . import base, geometry
 
+__all__ = ['GaussianCovariance']
 
 class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
     '''Gaussian covariance matrix of power spectrum multipoles in a given geometry.

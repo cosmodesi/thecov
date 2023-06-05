@@ -23,6 +23,8 @@ from tqdm import tqdm as shell_tqdm
 
 from . import base, utils
 
+__all__ = ['BoxGeometry', 'SurveyGeometry']
+
 # Window functions needed for Gaussian covariance calculation
 W_LABELS = ['12', '12xx', '12xy', '12xz', '12yy', '12yz', '12zz', '12xxxx', '12xxxy', '12xxxz', '12xxyy', '12xxyz', '12xxzz', '12xyyy', '12xyyz', '12xyzz', '12xzzz', '12yyyy', '12yyyz', '12yyzz', '12yzzz',
             '12zzzz', '22', '22xx', '22xy', '22xz', '22yy', '22yz', '22zz', '22xxxx', '22xxxy', '22xxxz', '22xxyy', '22xxyz', '22xxzz', '22xyyy', '22xyyz', '22xyzz', '22xzzz', '22yyyy', '22yyyz', '22yyzz', '22yzzz', '22zzzz']
@@ -277,11 +279,20 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         base.FourierBinned.__init__(self)
 
+        self.Nmesh = Nmesh
+        self.alpha = alpha
+        self.delta_k_max = delta_k_max
+        self.kmodes_sampled = kmodes_sampled
+
+        self.tqdm = tqdm
+
+        
+
+        self._W = {}
+        self._I = {}
+
         if random_catalog is not None:
             self._randoms = random_catalog
-
-            self._randoms['OriginalPosition'] = self._randoms['Position']
-            self._randoms['Position'] -= np.array(survey_center)
 
             self._ngals = self.randoms.size * self.alpha
 
@@ -290,6 +301,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
             survey_center = (pos_max + pos_min)/2
             print(f'Survey center is at xyz = {survey_center}. Centering coordinates.')
+
+            self._randoms['OriginalPosition'] = self._randoms['Position']
+            self._randoms['Position'] -= np.array(survey_center)
         else:
             self._ngals = None
 
@@ -313,13 +327,6 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         if k_nyquist < kmax_mask:
             print(f'WARNING: Nyquist frequency smaller than required kmax_mask = {kmax_mask}.')
 
-        self.Nmesh = Nmesh
-        self.alpha = alpha
-        self.delta_k_max = delta_k_max
-        self.kmodes_sampled = kmodes_sampled
-
-        self.tqdm = tqdm
-
         self._mesh_kwargs = {
             'Nmesh':       self.Nmesh,
             'BoxSize':     self.BoxSize,
@@ -330,15 +337,6 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         if mesh_kwargs is not None:
             self._mesh_kwargs.update(mesh_kwargs)
-
-
-        self._W = {}
-        self._I = {}
-
-        # for i,j in ['22', '11', '12', '10', '24', '14', '34', '44', '32']:
-        #     self._randoms[f'W{i}{j}'] = self._randoms['NZ']**(int(i)-1) * self._randoms['WEIGHT_FKP']**int(j)
-        #     # Computing I_ij integrals
-        #     self._I[f'{i}{j}'] = (self._randoms[f'W{i}{j}'].sum() * self.alpha).compute()
 
     def W_cat(self, W):
         '''Adds a column to the random catalog with the window function Wij.

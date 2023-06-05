@@ -1,14 +1,4 @@
-'''Module containing basic classes to deal with covariance matrices.
-
-Classes
--------
-Covariance
-    A class to represent a covariance matrix. Implements basic operations such as correlation matrix computation, etc.
-MultipoleCovariance
-    A class to represent a covariance matrix for an observable that's splitted in multipoles (ell1,ell2).
-FourierBinned
-    A class that implements k-binning of an observable.
-'''
+'''Module containing basic classes to deal with covariance matrices.'''
 
 import itertools as itt
 import numpy as np
@@ -16,14 +6,11 @@ import copy
 
 from . import utils
 
+__all__ = ['Covariance', 'MultipoleCovariance']
 
 class Covariance:
-    '''A class to represent a covariance matrix.
-
-    Attributes
-    ----------
-    cov : numpy.ndarray
-        The covariance matrix.
+    '''A class that represents a covariance matrix.
+    Implements basic operations such as correlation matrix computation, etc.
     '''
 
     def __init__(self, covariance=None):
@@ -126,7 +113,7 @@ class Covariance:
 
     @property
     def T(self):
-        '''This function transposes the covariance matrix.
+        '''Returns the transpose of the covariance matrix.
 
         Returns
         -------
