@@ -1,18 +1,47 @@
 # thecov
 
-Code for estimating theoretical covariance matrices of power spectrum multipoles based on [CovaPT](https://github.com/JayWadekar/CovaPT/) by [Wadekar & Scoccimaro 2019](http://arxiv.org/abs/1910.02914). Implements Gaussian + Trispectrum (from tree-level perturbation theory) + Super-sample (beat coupling + local averaging) terms in a cut sky.
+Code for estimating theoretical covariance matrices of power spectrum multipoles in arbitrary geometries based on [CovaPT](https://github.com/JayWadekar/CovaPT/) by [Wadekar & Scoccimaro 2019](http://arxiv.org/abs/1910.02914). Uses tree-level perturbation theory to estimate the connected term and includes super-sample covariance (beat coupling + local averaging).
 
 Under active development.
+
+Status:
+
+- Gaussian (box): ready.
+- Gaussian (cut-sky): works, but being further validated.
+- Regular trispectrum: interface being reworked.
+- Super-sample: to be validated.
 
 ## Installation
 
 ```sh
 pip install git+ssh://git@github.com/cosmodesi/thecov.git
 ```
+## Usage examples
 
-## Usage example
+### Gaussian covariance in cubic box geometry
 
-To calculate a Gaussian covariance including the survey geometry:
+```python
+import thecov.covariance
+import thecov.geometry
+
+geometry = thecov.geometry.BoxGeometry(volume=2000**3, nbar=1e-3)
+
+covariance = thecov.covariance.GaussianCovariance(geometry)
+covariance.set_kbins(kmin=0, kmax=0.25, dk=0.005)
+
+# Load input power spectra (P0,P2,P4) for the Gaussian covariance
+
+covariance.set_pk(P0, 0, has_shotnoise=False)
+covariance.set_pk(P2, 2)
+covariance.set_pk(P4, 4)
+
+covariance.compute_covariance()
+
+# Covariance object has properties covariance.cov, covariance.cor, and
+# functions like covariance.get_ell_cov(ell1, ell2) to output what you need.
+```
+
+### Gaussian covariance in cut sky geometry
 
 ```python
 
