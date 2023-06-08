@@ -279,14 +279,11 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         
         base.FourierBinned.__init__(self)
 
-        self.Nmesh = Nmesh
         self.alpha = alpha
         self.delta_k_max = delta_k_max
         self.kmodes_sampled = kmodes_sampled
 
         self.tqdm = tqdm
-
-        
 
         self._W = {}
         self._I = {}
@@ -318,10 +315,12 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         if Nmesh is None:
             # Pick odd value that will give at least k_mask = kmax_mask in the FFTs
-            Nmesh = int(kmax_mask*self.BoxSize/np.pi)//2 * 2 + 1
-            print(f'Using Nmesh = {BoxSize} for the window FFTs.')
+            self.Nmesh = int(kmax_mask*self.BoxSize/np.pi)//2 * 2 + 1
+            print(f'Using Nmesh = {self.Nmesh} for the window FFTs.')
+        else:
+            self.Nmesh = Nmesh
 
-        k_nyquist = np.pi*Nmesh/self.BoxSize
+        k_nyquist = np.pi*self.Nmesh/self.BoxSize
         print(f'Nyquist wavelength of window FFTs = {k_nyquist}.')
 
         if k_nyquist < kmax_mask:
@@ -337,6 +336,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         if mesh_kwargs is not None:
             self._mesh_kwargs.update(mesh_kwargs)
+
+        print(f'Average of {self.nbar/self.alpha*(self.BoxSize/self.Nmesh)**3} objects per voxel.')
 
     def W_cat(self, W):
         '''Adds a column to the random catalog with the window function Wij.
@@ -1013,3 +1014,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     @property
     def shotnoise(self):
         return self.I('12')/self.I('22')
+
+    @property
+    def nbar(self):
+        return 1/self.shotnoise
