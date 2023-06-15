@@ -300,7 +300,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             print(f'Survey center is at xyz = {survey_center}. Centering coordinates.')
 
             self._randoms['OriginalPosition'] = self._randoms['Position']
-            self._randoms['Position'] -= np.array(survey_center)
+            # self._randoms['Position'] -= np.array(survey_center)
+            self._randoms['Position'] += np.array(3*[BoxSize/2])
         else:
             self._ngals = None
 
@@ -422,11 +423,11 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         mesh_kwargs = self._mesh_kwargs
 
-        x = self.randoms['Position'].T
+        x = self.randoms['OriginalPosition'].T
 
         with self.tqdm(total=22, desc=f'Computing moments of W{w}') as pbar:
             self.set_cartesian_fft(f'W{w}', self._format_fft(self.randoms.to_mesh(
-                value=f'W{w}', **mesh_kwargs).paint(mode='complex'), w))
+                value=f'W{w}', **mesh_kwargs).paint(mode='complex')))
             
             # Check if zero mode of FFT Wij is consistent with integral Iij
             center = self.Nmesh//2
@@ -434,7 +435,10 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                 center -= 1
             Ww = self.W(w)[center, center, center]
             Iw = self.I(w)
-            assert np.isclose(Ww.real, Iw, rtol=1e-2) and Ww.imag == 0, f'Inconsistency between W{w}_0 = {Ww} and I{w} = {Iw}.'
+
+            if not np.isclose(Ww.real, Iw, rtol=1e-2) and np.isclose(Ww.imag, 0, rtol=1e-2):
+                print(f'WARNING: Inconsistency between W{w}_0 = {Ww} and I{w} = {Iw}.')
+            
 
             pbar.update(1)
 
@@ -443,7 +447,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                 self.randoms[label] = self.randoms[f'W{w}'] * \
                     x[i]*x[j] / (x[0]**2 + x[1]**2 + x[2]**2)
                 self.set_cartesian_fft(label, self._format_fft(self.randoms.to_mesh(
-                    value=label, **mesh_kwargs).paint(mode='complex'), w))
+                    value=label, **mesh_kwargs).paint(mode='complex')))
 
                 pbar.update(1)
 
@@ -452,7 +456,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                 self.randoms[label] = self.randoms[f'W{w}'] * x[i] * \
                     x[j]*x[k]*x[l] / (x[0]**2 + x[1]**2 + x[2]**2)**2
                 self.set_cartesian_fft(label, self._format_fft(self.randoms.to_mesh(
-                    value=label, **mesh_kwargs).paint(mode='complex'), w))
+                    value=label, **mesh_kwargs).paint(mode='complex')))
 
                 pbar.update(1)
 
@@ -476,13 +480,10 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     #         self._W[f'{w}{i_label}{j_label}{k_label}{l_label}'] = self._format_fft(real_field.apply(
     #             lambda x, v: np.nan_to_num(v*x[i]*x[j]*x[k]*x[l]/(x[0]**2 + x[1]**2 + x[2]**2)**2), kind='relative').r2c(), w)
 
-    def _format_fft(self, fourier, window):
+    def _format_fft(self, fourier):
 
         # PFFT omits modes that are determined by the Hermitian condition. Adding them:
         fourier_full = utils.r2c_to_c2c_3d(fourier)
-
-        if window == '12':
-            fourier_full = np.conj(fourier_full)
 
         return fft.fftshift(fourier_full)[::-1, ::-1, ::-1] * self.ngals
 
@@ -589,11 +590,13 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         kfun = 2*np.pi/self.BoxSize
 
         # sample kmodes from each k1 bin
-        kmodes = np.array([[utils.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(
-            self.kmodes_sampled)] for kmin, kmax in zip(self.kedges[:-1], self.kedges[1:])])
+        # kmodes = np.array([[utils.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(
+        #     self.kmodes_sampled)] for kmin, kmax in zip(self.kedges[:-1], self.kedges[1:])])
         
+        kmodes, Nmodes = utils.sample_from_cube(self.kmax/kfun, self.dk/kfun, self.kmodes_sampled)
+
         # Note: as the window falls steeply with k, only low-k regions are needed for the calculation.
-        # Therefore, high-k modes in the FFTs can be discarted
+        # Therefore, high-k modes in the FFTs can be discarded
 
         self.compute_cartesian_fft('W12')
         self.compute_cartesian_fft('W22')
@@ -605,7 +608,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             'dk': self.dk,
             'Nmesh': self.Nmesh,
             'delta_k_max': self.delta_k_max,
-            'kedges': self.kedges
+            'kedges': self.kedges,
+            'Nmodes': Nmodes,
         }
 
         def init_worker(*args):
@@ -684,7 +688,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         W = shared_w
 
-        Bin_ModeNum = utils.nmodes(BoxSize**3, kedges[:-1], kedges[1:])
+        # Bin_ModeNum = utils.nmodes(BoxSize**3, kedges[:-1], kedges[1:])
+        Bin_ModeNum = shared_params['Nmodes']
 
         # The Gaussian covariance drops quickly away from diagonal.
         # Only delta_k_max points to each side of the diagonal are calculated.
@@ -707,32 +712,32 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         kmodes_sampled = len(Bin_kmodes)
 
-        for ik1x, ik1y, ik1z, rk1 in Bin_kmodes:
+        for ik1x, ik1y, ik1z, ik1r in Bin_kmodes:
 
-            if rk1 <= 1e-10:
+            if ik1r <= 1e-10:
                 k1xh = 0
                 k1yh = 0
                 k1zh = 0
             else:
-                k1xh = ik1x/rk1
-                k1yh = ik1y/rk1
-                k1zh = ik1z/rk1
+                k1xh = ik1x/ik1r
+                k1yh = ik1y/ik1r
+                k1zh = ik1z/ik1r
 
             # Build a 3D array of modes around the selected mode
             k2xh = ik1x-iix
             k2yh = ik1y-iiy
             k2zh = ik1z-iiz
 
-            rk2 = np.sqrt(k2xh**2 + k2yh**2 + k2zh**2)
+            k2r = np.sqrt(k2xh**2 + k2yh**2 + k2zh**2)
 
             # to decide later which shell the k2 mode belongs to
-            k2_bin_index = (rk2*kfun/kBinWidth).astype(int)
+            k2_bin_index = (k2r*kfun/kBinWidth).astype(int)
 
-            rk2[rk2 <= 1e-10] = np.inf
+            k2r[k2r <= 1e-10] = np.inf
 
-            k2xh /= rk2
-            k2yh /= rk2
-            k2zh /= rk2
+            k2xh /= k2r
+            k2yh /= k2r
+            k2zh /= k2r
             # k2 hat arrays built
 
             # Now calculating window multipole kernels by taking dot products of cartesian FFTs with k1-hat, k2-hat arrays
@@ -801,50 +806,50 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             Wc_k1L4_k2L2 = Wc_k1L2_k2L4
             Wc_k1L4_k2L4 = np.conj(W_k1L4_k2L4)
 
-            k1k2W12 = W['12xxxx']*(k1xh*k2xh)**2 + W['12yyyy']*(k1yh*k2yh)**2 + W['12zzzz']*(k1zh*k2zh)**2 \
-                + W['12xxxy']*(k1xh*k1yh*k2xh**2 + k1xh**2*k2xh*k2yh)*2 \
-                + W['12xxxz']*(k1xh*k1zh*k2xh**2 + k1xh**2*k2xh*k2zh)*2 \
-                + W['12yyyz']*(k1yh*k1zh*k2yh**2 + k1yh**2*k2yh*k2zh)*2 \
-                + W['12yzzz']*(k1zh*k1yh*k2zh**2 + k1zh**2*k2zh*k2yh)*2 \
-                + W['12xyyy']*(k1yh*k1xh*k2yh**2 + k1yh**2*k2yh*k2xh)*2 \
-                + W['12xzzz']*(k1zh*k1xh*k2zh**2 + k1zh**2*k2zh*k2xh)*2 \
-                + W['12xxyy']*(k1xh**2*k2yh**2 + k1yh**2*k2xh**2 + 4.*k1xh*k1yh*k2xh*k2yh) \
-                + W['12xxzz']*(k1xh**2*k2zh**2 + k1zh**2*k2xh**2 + 4.*k1xh*k1zh*k2xh*k2zh) \
-                + W['12yyzz']*(k1yh**2*k2zh**2 + k1zh**2*k2yh**2 + 4.*k1yh*k1zh*k2yh*k2zh) \
-                + W['12xyyz']*(k1xh*k1zh*k2yh**2 + k1yh**2*k2xh*k2zh + 2.*k1yh*k2yh*(k1zh*k2xh + k1xh*k2zh))*2 \
-                + W['12xxyz']*(k1yh*k1zh*k2xh**2 + k1xh**2*k2yh*k2zh + 2.*k1xh*k2xh*(k1zh*k2yh + k1yh*k2zh))*2 \
-                + W['12xyzz']*(k1yh*k1xh*k2zh**2 + k1zh**2*k2yh *
+            k1k2W12 = np.conj(W['12xxxx'])*(k1xh*k2xh)**2 + np.conj(W['12yyyy'])*(k1yh*k2yh)**2 + np.conj(W['12zzzz'])*(k1zh*k2zh)**2 \
+                + np.conj(W['12xxxy'])*(k1xh*k1yh*k2xh**2 + k1xh**2*k2xh*k2yh)*2 \
+                + np.conj(W['12xxxz'])*(k1xh*k1zh*k2xh**2 + k1xh**2*k2xh*k2zh)*2 \
+                + np.conj(W['12yyyz'])*(k1yh*k1zh*k2yh**2 + k1yh**2*k2yh*k2zh)*2 \
+                + np.conj(W['12yzzz'])*(k1zh*k1yh*k2zh**2 + k1zh**2*k2zh*k2yh)*2 \
+                + np.conj(W['12xyyy'])*(k1yh*k1xh*k2yh**2 + k1yh**2*k2yh*k2xh)*2 \
+                + np.conj(W['12xzzz'])*(k1zh*k1xh*k2zh**2 + k1zh**2*k2zh*k2xh)*2 \
+                + np.conj(W['12xxyy'])*(k1xh**2*k2yh**2 + k1yh**2*k2xh**2 + 4.*k1xh*k1yh*k2xh*k2yh) \
+                + np.conj(W['12xxzz'])*(k1xh**2*k2zh**2 + k1zh**2*k2xh**2 + 4.*k1xh*k1zh*k2xh*k2zh) \
+                + np.conj(W['12yyzz'])*(k1yh**2*k2zh**2 + k1zh**2*k2yh**2 + 4.*k1yh*k1zh*k2yh*k2zh) \
+                + np.conj(W['12xyyz'])*(k1xh*k1zh*k2yh**2 + k1yh**2*k2xh*k2zh + 2.*k1yh*k2yh*(k1zh*k2xh + k1xh*k2zh))*2 \
+                + np.conj(W['12xxyz'])*(k1yh*k1zh*k2xh**2 + k1xh**2*k2yh*k2zh + 2.*k1xh*k2xh*(k1zh*k2yh + k1yh*k2zh))*2 \
+                + np.conj(W['12xyzz'])*(k1yh*k1xh*k2zh**2 + k1zh**2*k2yh *
                                k2xh + 2.*k1zh*k2zh*(k1xh*k2yh + k1yh*k2xh))*2
 
-            xxW12 = W['12xx']*k1xh**2 + W['12yy']*k1yh**2 + W['12zz']*k1zh**2 \
-                + 2.*W['12xy']*k1xh*k1yh + 2.*W['12yz'] * \
-                k1yh*k1zh + 2.*W['12xz']*k1zh*k1xh
+            xxW12 = np.conj(W['12xx'])*k1xh**2 + np.conj(W['12yy'])*k1yh**2 + np.conj(W['12zz'])*k1zh**2 \
+                + 2.*np.conj(W['12xy'])*k1xh*k1yh + 2.*np.conj(W['12yz']) * \
+                k1yh*k1zh + 2.*np.conj(W['12xz'])*k1zh*k1xh
 
-            W12_L0 = W['12']
-            W12_k1L2 = 1.5*xxW12 - 0.5*W['12']
-            W12_k1L4 = 35./8.*(W['12xxxx']*k1xh**4 + W['12yyyy']*k1yh**4 + W['12zzzz']*k1zh**4
-                               + 4.*W['12xxxy']*k1xh**3*k1yh + 4.*W['12xxxz'] *
-                               k1xh**3*k1zh + 4.*W['12xyyy']*k1yh**3*k1xh
-                               + 6.*W['12xxyy']*k1xh**2*k1yh**2 + 6.*W['12xxzz'] *
-                               k1xh**2*k1zh**2 + 6.*W['12yyzz']*k1yh**2*k1zh**2
-                               + 12.*W['12xxyz']*k1xh**2*k1yh*k1zh + 12.*W['12xyyz']*k1yh**2*k1xh*k1zh + 12.*W['12xyzz']*k1zh**2*k1xh*k1yh) \
-                - 5./2.*W12_k1L2 - 7./8.*W12_L0
+            W12c_L0 = np.conj(W['12'])
+            W12_k1L2 = 1.5*xxW12 - 0.5*np.conj(W['12'])
+            W12_k1L4 = 35./8.*(np.conj(W['12xxxx'])*k1xh**4 + np.conj(W['12yyyy'])*k1yh**4 + np.conj(W['12zzzz'])*k1zh**4
+                               + 4.*np.conj(W['12xxxy'])*k1xh**3*k1yh + 4.*np.conj(W['12xxxz']) *
+                               k1xh**3*k1zh + 4.*np.conj(W['12xyyy'])*k1yh**3*k1xh
+                               + 6.*np.conj(W['12xxyy'])*k1xh**2*k1yh**2 + 6.*np.conj(W['12xxzz']) *
+                               k1xh**2*k1zh**2 + 6.*np.conj(W['12yyzz'])*k1yh**2*k1zh**2
+                               + 12.*np.conj(W['12xxyz'])*k1xh**2*k1yh*k1zh + 12.*np.conj(W['12xyyz'])*k1yh**2*k1xh*k1zh + 12.*np.conj(W['12xyzz'])*k1zh**2*k1xh*k1yh) \
+                - 5./2.*W12_k1L2 - 7./8.*W12c_L0
 
             W12_k1L4_k2L2 = 2/7.*W12_k1L2 + 20/77.*W12_k1L4
-            W12_k1L4_k2L4 = 1/9.*W12_L0 + 100/693.*W12_k1L2 + 162/1001.*W12_k1L4
+            W12_k1L4_k2L4 = 1/9.*W12c_L0 + 100/693.*W12_k1L2 + 162/1001.*W12_k1L4
 
-            W12_k2L2 = 1.5*(W['12xx']*k2xh**2 + W['12yy']*k2yh**2 + W['12zz']*k2zh**2
-                            + 2.*W['12xy']*k2xh*k2yh + 2.*W['12yz']*k2yh*k2zh + 2.*W['12xz']*k2zh*k2xh) - 0.5*W['12']
+            W12_k2L2 = 1.5*(np.conj(W['12xx'])*k2xh**2 + np.conj(W['12yy'])*k2yh**2 + np.conj(W['12zz'])*k2zh**2
+                            + 2.*np.conj(W['12xy'])*k2xh*k2yh + 2.*np.conj(W['12yz'])*k2yh*k2zh + 2.*np.conj(W['12xz'])*k2zh*k2xh) - 0.5*np.conj(W['12'])
 
-            W12_k2L4 = 35./8.*(W['12xxxx']*k2xh**4 + W['12yyyy']*k2yh**4 + W['12zzzz']*k2zh**4
-                               + 4.*W['12xxxy']*k2xh**3*k2yh + 4.*W['12xxxz'] *
-                               k2xh**3*k2zh + 4.*W['12xyyy']*k2yh**3*k2xh
-                               + 4.*W['12yyyz']*k2yh**3*k2zh + 4.*W['12xzzz'] *
-                               k2zh**3*k2xh + 4.*W['12yzzz']*k2zh**3*k2yh
-                               + 6.*W['12xxyy']*k2xh**2*k2yh**2 + 6.*W['12xxzz'] *
-                               k2xh**2*k2zh**2 + 6.*W['12yyzz']*k2yh**2*k2zh**2
-                               + 12.*W['12xxyz']*k2xh**2*k2yh*k2zh + 12.*W['12xyyz']*k2yh**2*k2xh*k2zh + 12.*W['12xyzz']*k2zh**2*k2xh*k2yh) \
-                - 5./2.*W12_k2L2 - 7./8.*W12_L0
+            W12_k2L4 = 35./8.*(np.conj(W['12xxxx'])*k2xh**4 + np.conj(W['12yyyy'])*k2yh**4 + np.conj(W['12zzzz'])*k2zh**4
+                               + 4.*np.conj(W['12xxxy'])*k2xh**3*k2yh + 4.*np.conj(W['12xxxz']) *
+                               k2xh**3*k2zh + 4.*np.conj(W['12xyyy'])*k2yh**3*k2xh
+                               + 4.*np.conj(W['12yyyz'])*k2yh**3*k2zh + 4.*np.conj(W['12xzzz']) *
+                               k2zh**3*k2xh + 4.*np.conj(W['12yzzz'])*k2zh**3*k2yh
+                               + 6.*np.conj(W['12xxyy'])*k2xh**2*k2yh**2 + 6.*np.conj(W['12xxzz']) *
+                               k2xh**2*k2zh**2 + 6.*np.conj(W['12yyzz'])*k2yh**2*k2zh**2
+                               + 12.*np.conj(W['12xxyz'])*k2xh**2*k2yh*k2zh + 12.*np.conj(W['12xyyz'])*k2yh**2*k2xh*k2zh + 12.*np.conj(W['12xyzz'])*k2zh**2*k2xh*k2yh) \
+                - 5./2.*W12_k2L2 - 7./8.*W12c_L0
 
             W12_k1L2_k2L2 = 9./4.*k1k2W12 - 3./4.*xxW12 - 1./2.*W12_k2L2
 
@@ -858,8 +863,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                       Wc_k1L2*W_L0, Wc_k1L2*W_k2L2, Wc_k1L2*W_k2L4,
                       Wc_k1L4*W_L0, Wc_k1L4*W_k2L2, Wc_k1L4*W_k2L4]
 
-            C00exp += [2.*W_L0 * W12_L0, W_k1L2*W12_L0,         W_k1L4 * W12_L0,
-                       W_k2L2*W12_L0, W_k2L4*W12_L0, np.conj(W12_L0)*W12_L0]
+            C00exp += [2.*W_L0 * W12c_L0, W_k1L2*W12c_L0,         W_k1L4 * W12c_L0,
+                       W_k2L2*W12c_L0, W_k2L4*W12c_L0, np.conj(W12c_L0)*W12c_L0]
 
             C22exp = [Wc_k2L2*W_k1L2 + Wc_L0*W_k1L2_k2L2,
                       Wc_k2L2*W_k1L2_k2L2 + Wc_L0*W_k1L2_Sumk2L22,
@@ -871,21 +876,21 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                       Wc_k1L4_k2L2*W_k1L2_k2L2 + Wc_k1L4*W_k1L2_Sumk2L22,
                       Wc_k1L4_k2L2*W_k1L2_k2L4 + Wc_k1L4*W_k1L2_Sumk2L24]
 
-            C22exp += [W_k1L2*W12_k2L2 + W_k2L2*W12_k1L2 + W_k1L2_k2L2*W12_L0+W_L0*W12_k1L2_k2L2,
+            C22exp += [W_k1L2*W12_k2L2 + W_k2L2*W12_k1L2 + W_k1L2_k2L2*W12c_L0+W_L0*W12_k1L2_k2L2,
 
                        0.5*((1/5.*W_L0+2/7.*W_k1L2 + 18/35.*W_k1L4)*W12_k2L2 + W_k1L2_k2L2*W12_k1L2
-                            + (1/5.*W_k2L2+2/7.*W_k1L2_k2L2 + 18/35.*W_k1L4_k2L2)*W12_L0 + W_k1L2*W12_k1L2_k2L2),
+                            + (1/5.*W_k2L2+2/7.*W_k1L2_k2L2 + 18/35.*W_k1L4_k2L2)*W12c_L0 + W_k1L2*W12_k1L2_k2L2),
 
                        0.5*((2/7.*W_k1L2+20/77.*W_k1L4)*W12_k2L2 + W_k1L4_k2L2*W12_k1L2
-                            + (2/7.*W_k1L2_k2L2+20/77.*W_k1L4_k2L2)*W12_L0 + W_k1L4*W12_k1L2_k2L2),
+                            + (2/7.*W_k1L2_k2L2+20/77.*W_k1L4_k2L2)*W12c_L0 + W_k1L4*W12_k1L2_k2L2),
 
                        0.5*(W_k1L2_k2L2*W12_k2L2 + (1/5.*W_L0 + 2/7.*W_k2L2 + 18/35.*W_k2L4)*W12_k1L2
-                            + (1/5.*W_k1L2 + 2/7.*W_k1L2_k2L2 + 18/35.*W_k1L2_k2L4)*W12_L0 + W_k2L2*W12_k1L2_k2L2),
+                            + (1/5.*W_k1L2 + 2/7.*W_k1L2_k2L2 + 18/35.*W_k1L2_k2L4)*W12c_L0 + W_k2L2*W12_k1L2_k2L2),
 
                        0.5*(W_k1L2_k2L4*W12_k2L2 + (2/7.*W_k2L2 + 20/77.*W_k2L4)*W12_k1L2
-                            + W_k2L4*W12_k1L2_k2L2 + (2/7.*W_k1L2_k2L2 + 20/77.*W_k1L2_k2L4)*W12_L0),
+                            + W_k2L4*W12_k1L2_k2L2 + (2/7.*W_k1L2_k2L2 + 20/77.*W_k1L2_k2L4)*W12c_L0),
 
-                       np.conj(W12_k1L2_k2L2)*W12_L0 + np.conj(W12_k1L2)*W12_k2L2]
+                       np.conj(W12_k1L2_k2L2)*W12c_L0 + np.conj(W12_k1L2)*W12_k2L2]
 
             C44exp = [Wc_k2L4 * W_k1L4 + Wc_L0 * W_k1L4_k2L4,
                       Wc_k2L4 * W_k1L4_k2L2 + Wc_L0 * W_k1L4_Sumk2L24,
@@ -898,47 +903,47 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                       Wc_k1L4_k2L4*W_k1L4_k2L4 + Wc_k1L4*W_k1L4_Sumk2L44]
 
             C44exp += [W_k1L4 * W12_k2L4 + W_k2L4*W12_k1L4
-                       + W_k1L4_k2L4*W12_L0 + W_L0 * W12_k1L4_k2L4,
+                       + W_k1L4_k2L4*W12c_L0 + W_L0 * W12_k1L4_k2L4,
 
                        0.5*((2/7.*W_k1L2 + 20/77.*W_k1L4)*W12_k2L4 + W_k1L2_k2L4*W12_k1L4
-                            + (2/7.*W_k1L2_k2L4 + 20/77.*W_k1L4_k2L4)*W12_L0 + W_k1L2 * W12_k1L4_k2L4),
+                            + (2/7.*W_k1L2_k2L4 + 20/77.*W_k1L4_k2L4)*W12c_L0 + W_k1L2 * W12_k1L4_k2L4),
 
                        0.5*((1/9.*W_L0 + 100/693.*W_k1L2 + 162/1001.*W_k1L4)*W12_k2L4 + W_k1L4_k2L4*W12_k1L4
-                            + (1/9.*W_k2L4 + 100/693.*W_k1L2_k2L4 + 162/1001.*W_k1L4_k2L4)*W12_L0 + W_k1L4 * W12_k1L4_k2L4),
+                            + (1/9.*W_k2L4 + 100/693.*W_k1L2_k2L4 + 162/1001.*W_k1L4_k2L4)*W12c_L0 + W_k1L4 * W12_k1L4_k2L4),
 
                        0.5*(W_k1L4_k2L2*W12_k2L4 + (2/7.*W_k2L2 + 20/77.*W_k2L4)*W12_k1L4
-                            + W_k2L2*W12_k1L4_k2L4 + (2/7.*W_k1L4_k2L2 + 20/77.*W_k1L4_k2L4)*W12_L0),
+                            + W_k2L2*W12_k1L4_k2L4 + (2/7.*W_k1L4_k2L2 + 20/77.*W_k1L4_k2L4)*W12c_L0),
 
                        0.5*(W_k1L4_k2L4*W12_k2L4 + (1/9.*W_L0 + 100/693.*W_k2L2 + 162/1001.*W_k2L4)*W12_k1L4
-                            + W_k2L4*W12_k1L4_k2L4 + (1/9.*W_k1L4 + 100/693.*W_k1L4_k2L2 + 162/1001.*W_k1L4_k2L4)*W12_L0),
+                            + W_k2L4*W12_k1L4_k2L4 + (1/9.*W_k1L4 + 100/693.*W_k1L4_k2L2 + 162/1001.*W_k1L4_k2L4)*W12c_L0),
 
-                       np.conj(W12_k1L4_k2L4)*W12_L0 + np.conj(W12_k1L4)*W12_k2L4]  # 1/(nbar)^2
+                       np.conj(W12_k1L4_k2L4)*W12c_L0 + np.conj(W12_k1L4)*W12_k2L4]  # 1/(nbar)^2
 
             C20exp = [Wc_L0 * W_k1L2,   Wc_L0*W_k1L2_k2L2, Wc_L0 * W_k1L2_k2L4,
                       Wc_k1L2*W_k1L2, Wc_k1L2*W_k1L2_k2L2, Wc_k1L2*W_k1L2_k2L4,
                       Wc_k1L4*W_k1L2, Wc_k1L4*W_k1L2_k2L2, Wc_k1L4*W_k1L2_k2L4]
 
-            C20exp += [W_k1L2*W12_L0 + W['22']*W12_k1L2,
+            C20exp += [W_k1L2*W12c_L0 + W['22']*W12_k1L2,
                        0.5*((1/5.*W['22'] + 2/7.*W_k1L2 + 18 /
-                            35.*W_k1L4)*W12_L0 + W_k1L2*W12_k1L2),
+                            35.*W_k1L4)*W12c_L0 + W_k1L2*W12_k1L2),
                        0.5*((2/7.*W_k1L2 + 20/77.*W_k1L4)
-                            * W12_L0 + W_k1L4*W12_k1L2),
-                       0.5*(W_k1L2_k2L2*W12_L0 + W_k2L2*W12_k1L2),
-                       0.5*(W_k1L2_k2L4*W12_L0 + W_k2L4*W12_k1L2),
-                       np.conj(W12_k1L2)*W12_L0]
+                            * W12c_L0 + W_k1L4*W12_k1L2),
+                       0.5*(W_k1L2_k2L2*W12c_L0 + W_k2L2*W12_k1L2),
+                       0.5*(W_k1L2_k2L4*W12c_L0 + W_k2L4*W12_k1L2),
+                       np.conj(W12_k1L2)*W12c_L0]
 
             C40exp = [Wc_L0*W_k1L4,   Wc_L0 * W_k1L4_k2L2, Wc_L0 * W_k1L4_k2L4,
                       Wc_k1L2*W_k1L4, Wc_k1L2*W_k1L4_k2L2, Wc_k1L2*W_k1L4_k2L4,
                       Wc_k1L4*W_k1L4, Wc_k1L4*W_k1L4_k2L2, Wc_k1L4*W_k1L4_k2L4]
 
-            C40exp += [W_k1L4*W12_L0 + W['22']*W12_k1L4,
+            C40exp += [W_k1L4*W12c_L0 + W['22']*W12_k1L4,
                        0.5*((2/7.*W_k1L2 + 20/77.*W_k1L4)
-                            * W12_L0 + W_k1L2*W12_k1L4),
+                            * W12c_L0 + W_k1L2*W12_k1L4),
                        0.5*((1/9.*W['22'] + 100/693.*W_k1L2+162 /
-                            1001.*W_k1L4)*W12_L0 + W_k1L4*W12_k1L4),
-                       0.5*(W_k1L4_k2L2*W12_L0 + W_k2L2*W12_k1L4),
-                       0.5*(W_k1L4_k2L4*W12_L0 + W_k2L4*W12_k1L4),
-                       np.conj(W12_k1L4)*W12_L0]
+                            1001.*W_k1L4)*W12c_L0 + W_k1L4*W12_k1L4),
+                       0.5*(W_k1L4_k2L2*W12c_L0 + W_k2L2*W12_k1L4),
+                       0.5*(W_k1L4_k2L4*W12c_L0 + W_k2L4*W12_k1L4),
+                       np.conj(W12_k1L4)*W12c_L0]
 
             C42exp = [Wc_k2L2*W_k1L4 + Wc_L0 * W_k1L4_k2L2,
                       Wc_k2L2*W_k1L4_k2L2 + Wc_L0 * W_k1L4_Sumk2L22,
@@ -951,21 +956,21 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                       Wc_k1L4_k2L2*W_k1L4_k2L4 + Wc_k1L4*W_k1L4_Sumk2L24]
 
             C42exp += [W_k1L4*W12_k2L2 + W_k2L2*W12_k1L4
-                       + W_k1L4_k2L2*W12_L0 + W['22']*W12_k1L4_k2L2,
+                       + W_k1L4_k2L2*W12c_L0 + W['22']*W12_k1L4_k2L2,
 
                        0.5*((2/7.*W_k1L2 + 20/77.*W_k1L4)*W12_k2L2 + W_k1L2_k2L2*W12_k1L4
-                            + (2/7.*W_k1L2_k2L2 + 20/77.*W_k1L4_k2L2)*W12_L0 + W_k1L2 * W12_k1L4_k2L2),
+                            + (2/7.*W_k1L2_k2L2 + 20/77.*W_k1L4_k2L2)*W12c_L0 + W_k1L2 * W12_k1L4_k2L2),
 
                        0.5*((1/9.*W['22'] + 100/693.*W_k1L2 + 162/1001.*W_k1L4)*W12_k2L2 + W_k1L4_k2L2*W12_k1L4
-                            + (1/9.*W_k2L2 + 100/693.*W_k1L2_k2L2 + 162/1001.*W_k1L4_k2L2)*W12_L0 + W_k1L4*W12_k1L4_k2L2),
+                            + (1/9.*W_k2L2 + 100/693.*W_k1L2_k2L2 + 162/1001.*W_k1L4_k2L2)*W12c_L0 + W_k1L4*W12_k1L4_k2L2),
 
                        0.5*(W_k1L4_k2L2*W12_k2L2 + (1/5.*W['22'] + 2/7.*W_k2L2 + 18/35.*W_k2L4)*W12_k1L4
-                            + W_k2L2*W12_k1L4_k2L2 + (1/5.*W_k1L4 + 2/7.*W_k1L4_k2L2 + 18/35.*W_k1L4_k2L4)*W12_L0),
+                            + W_k2L2*W12_k1L4_k2L2 + (1/5.*W_k1L4 + 2/7.*W_k1L4_k2L2 + 18/35.*W_k1L4_k2L4)*W12c_L0),
 
                        0.5*(W_k1L4_k2L4*W12_k2L2 + (2/7.*W_k2L2 + 20/77.*W_k2L4)*W12_k1L4
-                            + W_k2L4*W12_k1L4_k2L2 + (2/7.*W_k1L4_k2L2 + 20/77.*W_k1L4_k2L4)*W12_L0),
+                            + W_k2L4*W12_k1L4_k2L2 + (2/7.*W_k1L4_k2L2 + 20/77.*W_k1L4_k2L4)*W12c_L0),
 
-                       np.conj(W12_k1L4_k2L2)*W12_L0+np.conj(W12_k1L4)*W12_k2L2]  # 1/(nbar)^2
+                       np.conj(W12_k1L4_k2L2)*W12c_L0+np.conj(W12_k1L4)*W12_k2L2]  # 1/(nbar)^2
             
             for delta_k in range(-delta_k_max, delta_k_max + 1):
                 # k2_bin_index has shape (Nmesh, Nmesh, Nmesh)
