@@ -513,6 +513,20 @@ class FourierBinned:
         '''
 
         return np.arange(self.kmin + self.dk/2, self.kmax + self.dk/2, self.dk)
+    
+    @property
+    def kavg(self):
+        '''
+        Returns the average k of the k-bins. Assumes spherical approximation to
+        integrate k-modes, which fails for small k.
+        
+        Returns
+        -------
+        numpy.ndarray
+            The average k of the k-bins.
+        '''
+        return 3/4*(self.kedges[1:]**4 - self.kedges[:-1]**4)/ \
+                   (self.kedges[1:]**3 - self.kedges[:-1]**3)
 
     @property
     def kedges(self):
@@ -583,3 +597,6 @@ class FourierBinned:
 
         self._nmodes = nmodes
         return nmodes
+
+class MultipoleFourierCovariance(MultipoleCovariance, FourierBinned):
+    pass
