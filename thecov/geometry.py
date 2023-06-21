@@ -18,6 +18,7 @@ import os
 
 import numpy as np
 from scipy import fft
+import dask.array as da
 
 from tqdm import tqdm as shell_tqdm
 
@@ -283,6 +284,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self.delta_k_max = delta_k_max
         self.kmodes_sampled = kmodes_sampled
 
+        self._shotnoise = None
+
         self.tqdm = tqdm
 
         self._W = {}
@@ -295,7 +298,6 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
             pos_max = da.max(random_catalog['Position'], axis=0).compute()
             pos_min = da.min(random_catalog['Position'], axis=0).compute()
-
 
             print(f'Randoms xyz range =  {pos_min} to {pos_max}.')
             print(f'They fit inside a box of size {pos_max - pos_min}.')
@@ -1005,8 +1007,19 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
     @property
     def shotnoise(self):
-        return self.I('12')/self.I('22')
+        if self._shotnoise is None:
+            return self.I('12')/self.I('22')
+        else:
+            return self.I('12')/self.I('22')
+
+    @shotnoise.setter
+    def shotnoise(self, shotnoise):
+        self._shotnoise = shotnoise
 
     @property
     def nbar(self):
         return 1/self.shotnoise
+
+    @nbar.setter
+    def nbar(self, nbar):
+        self.shotnoise = 1/nbar
