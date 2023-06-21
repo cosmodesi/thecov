@@ -293,8 +293,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
             self._ngals = self.randoms.size * self.alpha
 
-            pos_max = np.max(random_catalog['Position'], axis=0).compute()
-            pos_min = np.min(random_catalog['Position'], axis=0).compute()
+            pos_max = da.max(random_catalog['Position'], axis=0).compute()
+            pos_min = da.min(random_catalog['Position'], axis=0).compute()
+
 
             print(f'Randoms xyz range =  {pos_min} to {pos_max}.')
             print(f'They fit inside a box of size {pos_max - pos_min}.')
