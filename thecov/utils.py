@@ -110,6 +110,35 @@ def sample_from_shell(rmin, rmax, discrete=True):
     
     return x,y,z,r
 
+def sample_from_cube(rmax, dr, max_modes:int=200):
+    
+    iL = np.ceil(rmax).astype(int)
+
+    ix, iy, iz = np.mgrid[-iL:iL+1,-iL:iL+1,-iL:iL+1]
+    ir = np.sqrt(ix**2 + iy**2 + iz**2)
+
+    sort = (ir/dr).astype(int)
+    
+    modes = []
+    Nmodes = []
+    for i in range(np.ceil(rmax/dr).astype(int)):
+        mask = sort == i
+        N = np.sum(mask)
+        if N > max_modes:
+            rand_mask = np.random.randint(N, size=max_modes)
+            modes.append(np.array([ix[mask][rand_mask],
+                                   iy[mask][rand_mask],
+                                   iz[mask][rand_mask],
+                                   ir[mask][rand_mask]]).T)
+        else:
+            modes.append(np.array([ix[mask],
+                                   iy[mask],
+                                   iz[mask],
+                                   ir[mask]]).T)
+        Nmodes.append(N)
+
+    return modes, Nmodes
+
 def nmodes(volume, kmin, kmax):
     '''Compute the number of modes in a given shell.
     
