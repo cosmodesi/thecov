@@ -32,7 +32,18 @@ W_LABELS = ['12', '12xx', '12xy', '12xz', '12yy', '12yz', '12zz', '12xxxx', '12x
 
 
 class Geometry(ABC):
-    pass
+
+    def save_attributes(self, filename, attrs):
+        np.savez(filename if filename.strip()
+                 [-4:] == '.npz' else f'{filename}.npz', **{a: getattr(self, a) for a in attrs})
+        
+    def load_attributes(self, filename, attrs=None):
+        with np.load(filename, mmap_mode='r') as data:
+            if attrs is None:
+                attrs = data.files
+            for a in attrs:
+                setattr(self, a, data[a])
+
 
 
 class BoxGeometry(Geometry):
@@ -554,6 +565,10 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     @property
     def ngals(self):
         return self._ngals
+    
+    @ngals.setter
+    def ngals(self, ngals):
+        self._ngals = ngals
 
     @property
     def kbins(self):
@@ -639,8 +654,17 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         ----------
         filename : str
             Name of the file to save the window kernels.'''
-        np.savez(filename if filename.strip()
-                 [-4:] == '.npz' else f'{filename}.npz', WinKernel=self.WinKernel, kmin=self.kmin, kmax=self.kmax, dk=self.dk)
+        self.save_attributes(filename, ['alpha',
+                                       'delta_k_max',
+                                       'kmodes_sampled',
+                                       'shotnoise',
+                                       'ngals',
+                                       'BoxSize',
+                                       'Nmesh',
+                                       'dk',
+                                       'kmax',
+                                       'kmin',
+                                       'WinKernel'])
 
     def load_window_kernels(self, filename):
         '''Load the window kernels from a file.
@@ -650,9 +674,20 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         filename : str
             Name of the file to load the window kernels from.
         '''
-        with np.load(filename, mmap_mode='r') as data:
-            self.WinKernel = data['WinKernel']
-            self.set_kbins(data['kmin'], data['kmax'], data['dk'])
+        self.load_attributes(filename)
+
+    @classmethod
+    def from_window_kernels_file(cls, filename):
+        '''Create geometry object from window kernels file.
+        
+        Parameters
+        ----------
+        filename : str
+            Name of the file to load the window kernels from.
+        '''
+        geometry = cls()
+        geometry.load_window_kernels(filename)
+        return geometry
 
     @staticmethod
     def _compute_window_kernel_row(args):
