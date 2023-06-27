@@ -64,9 +64,9 @@ class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
             Whether the power spectrum has shotnoise included or not.
         '''
 
-        if ell == 0 and not has_shotnoise:
-            print(f'Adding shotnoise = {self.shotnoise} to ell = 0.')
-            self._pk[ell] = pk + self.shotnoise
+        if ell == 0 and has_shotnoise:
+            print(f'Removing shotnoise = {self.shotnoise} from ell = 0.')
+            self._pk[ell] = pk - self.shotnoise
         else:
             self._pk[ell] = pk
 
@@ -85,9 +85,9 @@ class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
 
         if ell in self._pk.keys():
             pk = self._pk[ell]
-            if remove_shotnoise and ell == 0:
-                print(f'Removing shotnoise = {self.shotnoise} from ell = 0.')
-                return pk - self.shotnoise
+            if (not remove_shotnoise) and ell == 0:
+                print(f'Adding shotnoise = {self.shotnoise} to ell = 0.')
+                return pk + self.shotnoise
             return pk
         elif force_return:
             return np.zeros(self.kbins)
@@ -165,7 +165,7 @@ class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
         kbins = self.kbins
 
         # If the power spectrum for a given ell is not set, use a zero array instead
-        P0 = self.get_pk(0, force_return=True)
+        P0 = self.get_pk(0, force_return=True, remove_shotnoise=True)
         P4 = self.get_pk(2, force_return=True)
         P2 = self.get_pk(4, force_return=True)
 
@@ -187,13 +187,13 @@ class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
                     WinKernel[ki, delta_k, 6]*P4[ki]*P0[kj] + \
                     WinKernel[ki, delta_k, 7]*P4[ki]*P2[kj] + \
                     WinKernel[ki, delta_k, 8]*P4[ki]*P4[kj] + \
-                    1.01*(
+                    (1 + self.geometry.alpha)*(
                         WinKernel[ki, delta_k, 9]*(P0[ki] + P0[kj])/2. +
                         WinKernel[ki, delta_k, 10]*P2[ki] + WinKernel[ki, delta_k, 11]*P4[ki] +
                         WinKernel[ki, delta_k, 12]*P2[kj] +
                     WinKernel[ki, delta_k, 13]*P4[kj]
                 ) + \
-                    1.01**2 * WinKernel[ki, delta_k, 14]
+                    (1 + self.geometry.alpha)**2 * WinKernel[ki, delta_k, 14]
 
         self.set_ell_cov(0, 0, cov[:, :, 0])
         self.set_ell_cov(2, 2, cov[:, :, 1])

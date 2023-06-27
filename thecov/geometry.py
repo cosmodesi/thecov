@@ -32,7 +32,18 @@ W_LABELS = ['12', '12xx', '12xy', '12xz', '12yy', '12yz', '12zz', '12xxxx', '12x
 
 
 class Geometry(ABC):
-    pass
+
+    def save_attributes(self, filename, attrs):
+        np.savez(filename if filename.strip()
+                 [-4:] == '.npz' else f'{filename}.npz', **{a: getattr(self, a) for a in attrs})
+        
+    def load_attributes(self, filename, attrs=None):
+        with np.load(filename, mmap_mode='r') as data:
+            if attrs is None:
+                attrs = data.files
+            for a in attrs:
+                setattr(self, a, data[a])
+
 
 
 class BoxGeometry(Geometry):
@@ -178,7 +189,7 @@ class BoxGeometry(Geometry):
         self.nbar = np.average(self.nz, weights=bin_volume)
         print(f'Estimated nbar: {self.nbar:.3e} (Mpc/h)^-3')
 
-    def set_randoms(self, randoms, alpha=1.0):
+    def set_randoms(self, randoms, alpha=1.0, fsky=None):
         '''Estimates the effective volume and number density of the box based on a
         provided catalog of randoms.
         
@@ -189,15 +200,20 @@ class BoxGeometry(Geometry):
         alpha : float, optional
             Factor to multiply the number density of the randoms. Default is 1.0.
         '''
-        import healpy as hp
+        
         from nbodykit.algorithms import zhist
 
-        nside = 512
-        hpixel = hp.ang2pix(nside, randoms['RA'], randoms['DEC'], lonlat=True)
-        unique_hpixels = np.unique(hpixel)
-        self.fsky = len(unique_hpixels.compute())/hp.nside2npix(nside)
+        if fsky is None:
+            import healpy as hp
 
-        print(f'fsky estimated from randoms: {self.fsky:.3f}')
+            nside = 512
+            hpixel = hp.ang2pix(nside, randoms['RA'], randoms['DEC'], lonlat=True)
+            unique_hpixels = np.unique(hpixel)
+            self.fsky = len(unique_hpixels.compute())/hp.nside2npix(nside)
+
+            print(f'fsky estimated from randoms: {self.fsky:.3f}')
+        else:
+            self.fsky = fsky
 
         nz_hist = zhist.RedshiftHistogram(
             randoms, self.fsky, self.cosmo, redshift='Z')
@@ -274,7 +290,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     .. [1] https://arxiv.org/abs/1910.02914
     '''
 
-    def __init__(self, random_catalog=None, Nmesh=None, BoxSize=None, kmax_mask=0.05, delta_k_max=3, kmodes_sampled=250, alpha=1.0, mesh_kwargs=None, tqdm=shell_tqdm):
+    def __init__(self, random_catalog=None, Nmesh=None, BoxSize=None, kmax_mask=0.05, delta_k_max=3, kmodes_sampled=400, alpha=1.0, mesh_kwargs=None, tqdm=shell_tqdm):
 
         assert Nmesh is None or Nmesh % 2 == 1, 'Please, use an odd integer for Nmesh.'
         
@@ -304,16 +320,12 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
             survey_center = (pos_max + pos_min)/2
             print(f'Survey center is at xyz = {survey_center}.')
-
-            # print(f'Adding {-pos_min} to xyz coordinates to make them positive.')
-            # self._randoms['OriginalPosition'] = self._randoms['Position']
-            # self._randoms['Position'] -= survey_center
         else:
             self._ngals = None
 
         if BoxSize is None and random_catalog is not None:
             # Estimate BoxSize from random catalog
-            self.BoxSize = max(pos_max - pos_min)
+            self.BoxSize = max(pos_max - pos_min)*1.1
             print(f'Using BoxSize = {self.BoxSize}.')
         elif np.ndim(BoxSize) == 0:
             self.BoxSize = BoxSize
@@ -326,7 +338,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         if Nmesh is None:
             # Pick odd value that will give at least k_mask = kmax_mask in the FFTs
-            self.Nmesh = int(kmax_mask*self.BoxSize/np.pi)//2 * 2 + 1
+            self.Nmesh = int(np.ceil(kmax_mask*self.BoxSize/np.pi))
             print(f'Using Nmesh = {self.Nmesh} for the window FFTs.')
         else:
             self.Nmesh = Nmesh
@@ -549,6 +561,10 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     @property
     def ngals(self):
         return self._ngals
+    
+    @ngals.setter
+    def ngals(self, ngals):
+        self._ngals = ngals
 
     @property
     def kbins(self):
@@ -634,8 +650,17 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         ----------
         filename : str
             Name of the file to save the window kernels.'''
-        np.savez(filename if filename.strip()
-                 [-4:] == '.npz' else f'{filename}.npz', WinKernel=self.WinKernel, kmin=self.kmin, kmax=self.kmax, dk=self.dk)
+        self.save_attributes(filename, ['alpha',
+                                       'delta_k_max',
+                                       'kmodes_sampled',
+                                       'shotnoise',
+                                       'ngals',
+                                       'BoxSize',
+                                       'Nmesh',
+                                       'dk',
+                                       'kmax',
+                                       'kmin',
+                                       'WinKernel'])
 
     def load_window_kernels(self, filename):
         '''Load the window kernels from a file.
@@ -645,9 +670,20 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         filename : str
             Name of the file to load the window kernels from.
         '''
-        with np.load(filename, mmap_mode='r') as data:
-            self.WinKernel = data['WinKernel']
-            self.set_kbins(data['kmin'], data['kmax'], data['dk'])
+        self.load_attributes(filename)
+
+    @classmethod
+    def from_window_kernels_file(cls, filename):
+        '''Create geometry object from window kernels file.
+        
+        Parameters
+        ----------
+        filename : str
+            Name of the file to load the window kernels from.
+        '''
+        geometry = cls()
+        geometry.load_window_kernels(filename)
+        return geometry
 
     @staticmethod
     def _compute_window_kernel_row(args):
@@ -1010,7 +1046,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         if self._shotnoise is None:
             return self.I('12')/self.I('22')
         else:
-            return self.I('12')/self.I('22')
+            return self._shotnoise
 
     @shotnoise.setter
     def shotnoise(self, shotnoise):
