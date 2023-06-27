@@ -187,13 +187,13 @@ class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
                     WinKernel[ki, delta_k, 6]*P4[ki]*P0[kj] + \
                     WinKernel[ki, delta_k, 7]*P4[ki]*P2[kj] + \
                     WinKernel[ki, delta_k, 8]*P4[ki]*P4[kj] + \
-                    1.01*(
+                    (1 + self.geometry.alpha)*(
                         WinKernel[ki, delta_k, 9]*(P0[ki] + P0[kj])/2. +
                         WinKernel[ki, delta_k, 10]*P2[ki] + WinKernel[ki, delta_k, 11]*P4[ki] +
                         WinKernel[ki, delta_k, 12]*P2[kj] +
                     WinKernel[ki, delta_k, 13]*P4[kj]
                 ) + \
-                    1.01**2 * WinKernel[ki, delta_k, 14]
+                    (1 + self.geometry.alpha)**2 * WinKernel[ki, delta_k, 14]
 
         self.set_ell_cov(0, 0, cov[:, :, 0])
         self.set_ell_cov(2, 2, cov[:, :, 1])
