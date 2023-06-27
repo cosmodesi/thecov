@@ -64,9 +64,9 @@ class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
             Whether the power spectrum has shotnoise included or not.
         '''
 
-        if ell == 0 and not has_shotnoise:
-            print(f'Adding shotnoise = {self.shotnoise} to ell = 0.')
-            self._pk[ell] = pk + self.shotnoise
+        if ell == 0 and has_shotnoise:
+            print(f'Removing shotnoise = {self.shotnoise} from ell = 0.')
+            self._pk[ell] = pk - self.shotnoise
         else:
             self._pk[ell] = pk
 
@@ -85,9 +85,9 @@ class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
 
         if ell in self._pk.keys():
             pk = self._pk[ell]
-            if remove_shotnoise and ell == 0:
-                print(f'Removing shotnoise = {self.shotnoise} from ell = 0.')
-                return pk - self.shotnoise
+            if (not remove_shotnoise) and ell == 0:
+                print(f'Adding shotnoise = {self.shotnoise} to ell = 0.')
+                return pk + self.shotnoise
             return pk
         elif force_return:
             return np.zeros(self.kbins)
@@ -165,7 +165,7 @@ class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
         kbins = self.kbins
 
         # If the power spectrum for a given ell is not set, use a zero array instead
-        P0 = self.get_pk(0, force_return=True)
+        P0 = self.get_pk(0, force_return=True, remove_shotnoise=True)
         P4 = self.get_pk(2, force_return=True)
         P2 = self.get_pk(4, force_return=True)
 
