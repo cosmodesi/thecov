@@ -311,7 +311,7 @@ def plot_cov(cova, covb=None, kmax=None, label_a=None, label_b=None, vmin=-1, vm
     '''
     return plot_cov_array(cova=cova.cov, covb=covb.cov if covb is not None else None, k=cova.kmid, kmax=kmax, label_a=None, label_b=None, vmin=-1, vmax=1, num_ticks=5, **kwargs)
 
-def plot_cov_diag(cov, k=None, label=None, klim=None, colors=['k', 'r', 'g', 'b'], portrait=False):
+def plot_cov_diag(cov, k=None, label=None, klim=None, colors=['k', 'r', 'g', 'b'], portrait=False, logplot=True):
     '''Plot the diagonal of a MultipoleCovariance object.
 
     Parameters
@@ -370,16 +370,24 @@ def plot_cov_diag(cov, k=None, label=None, klim=None, colors=['k', 'r', 'g', 'b'
                 k  = c.kmid
                 break
 
-    p2 = cov[0].get_pk(0)**2 if hasattr(cov[0], 'get_pk') else 1.0
-
+    p2 = 1
+    div_by_p2 = False
+    for c in cov:
+        if hasattr(c, 'get_pk'):
+            p2 = c.get_pk(0)**2
+            div_by_p2 = True
+            break
+    
     for (l1, l2), ax1, ax2 in zip([(0,0), (2,2), (4,4), (0,2), (0,4), (2,4)], axes1, axes2):
         
         for c,l,color in zip(cov,label,colors):
 
             a = np.diag(c.get_ell_cov(l1,l2).cov)/p2
-
-            ax1.semilogy(k,  a, label=l, c=color)
-            ax1.semilogy(k, -a, c=color, ls='dashed')
+            if logplot:
+                ax1.semilogy(k,  a, label=l, c=color)
+                ax1.semilogy(k, -a, c=color, ls='dashed')
+            else:
+                ax1.plot(k,  a, label=l, c=color)
 
         for c,l,color in zip(cov[1:], label[1:], colors[1:]):
             a = np.diag(c.get_ell_cov(l1,l2).cov)/p2
@@ -387,7 +395,7 @@ def plot_cov_diag(cov, k=None, label=None, klim=None, colors=['k', 'r', 'g', 'b'
             
             ax2.plot(k,  a/b-1, label='frac. diff', c=color)
             
-        ax1.set_ylabel(r"$C_{l1l2}(k,k)/P_0(k)^2$".replace('l1', str(l1)).replace('l2', str(l2)))
+        ax1.set_ylabel(f"$C_{{{l1}{l2}}}(k,k){r'/P_0(k)^2' if div_by_p2 else ''}$")
         ax2.set_xlabel('k [h/Mpc]')
 
         if len(cov) > 1:
