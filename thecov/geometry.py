@@ -178,7 +178,7 @@ class BoxGeometry(Geometry):
         self.nbar = np.average(self.nz, weights=bin_volume)
         print(f'Estimated nbar: {self.nbar:.3e} (Mpc/h)^-3')
 
-    def set_randoms(self, randoms, alpha=1.0):
+    def set_randoms(self, randoms, alpha=1.0, fsky=None):
         '''Estimates the effective volume and number density of the box based on a
         provided catalog of randoms.
         
@@ -189,15 +189,20 @@ class BoxGeometry(Geometry):
         alpha : float, optional
             Factor to multiply the number density of the randoms. Default is 1.0.
         '''
-        import healpy as hp
+        
         from nbodykit.algorithms import zhist
 
-        nside = 512
-        hpixel = hp.ang2pix(nside, randoms['RA'], randoms['DEC'], lonlat=True)
-        unique_hpixels = np.unique(hpixel)
-        self.fsky = len(unique_hpixels.compute())/hp.nside2npix(nside)
+        if fsky is None:
+            import healpy as hp
 
-        print(f'fsky estimated from randoms: {self.fsky:.3f}')
+            nside = 512
+            hpixel = hp.ang2pix(nside, randoms['RA'], randoms['DEC'], lonlat=True)
+            unique_hpixels = np.unique(hpixel)
+            self.fsky = len(unique_hpixels.compute())/hp.nside2npix(nside)
+
+            print(f'fsky estimated from randoms: {self.fsky:.3f}')
+        else:
+            self.fsky = fsky
 
         nz_hist = zhist.RedshiftHistogram(
             randoms, self.fsky, self.cosmo, redshift='Z')
