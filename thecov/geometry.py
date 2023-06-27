@@ -290,7 +290,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     .. [1] https://arxiv.org/abs/1910.02914
     '''
 
-    def __init__(self, random_catalog=None, Nmesh=None, BoxSize=None, kmax_mask=0.05, delta_k_max=3, kmodes_sampled=250, alpha=1.0, mesh_kwargs=None, tqdm=shell_tqdm):
+    def __init__(self, random_catalog=None, Nmesh=None, BoxSize=None, kmax_mask=0.05, delta_k_max=3, kmodes_sampled=400, alpha=1.0, mesh_kwargs=None, tqdm=shell_tqdm):
 
         assert Nmesh is None or Nmesh % 2 == 1, 'Please, use an odd integer for Nmesh.'
         
@@ -320,16 +320,12 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
             survey_center = (pos_max + pos_min)/2
             print(f'Survey center is at xyz = {survey_center}.')
-
-            # print(f'Adding {-pos_min} to xyz coordinates to make them positive.')
-            # self._randoms['OriginalPosition'] = self._randoms['Position']
-            # self._randoms['Position'] -= survey_center
         else:
             self._ngals = None
 
         if BoxSize is None and random_catalog is not None:
             # Estimate BoxSize from random catalog
-            self.BoxSize = max(pos_max - pos_min)
+            self.BoxSize = max(pos_max - pos_min)*1.1
             print(f'Using BoxSize = {self.BoxSize}.')
         elif np.ndim(BoxSize) == 0:
             self.BoxSize = BoxSize
@@ -342,7 +338,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         if Nmesh is None:
             # Pick odd value that will give at least k_mask = kmax_mask in the FFTs
-            self.Nmesh = int(kmax_mask*self.BoxSize/np.pi)//2 * 2 + 1
+            self.Nmesh = int(np.ceil(kmax_mask*self.BoxSize/np.pi))
             print(f'Using Nmesh = {self.Nmesh} for the window FFTs.')
         else:
             self.Nmesh = Nmesh
@@ -1050,7 +1046,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         if self._shotnoise is None:
             return self.I('12')/self.I('22')
         else:
-            return self.I('12')/self.I('22')
+            return self._shotnoise
 
     @shotnoise.setter
     def shotnoise(self, shotnoise):
