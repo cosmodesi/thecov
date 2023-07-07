@@ -311,7 +311,7 @@ def plot_cov(cova, covb=None, kmax=None, label_a=None, label_b=None, vmin=-1, vm
     '''
     return plot_cov_array(cova=cova.cov, covb=covb.cov if covb is not None else None, k=cova.kmid, kmax=kmax, label_a=None, label_b=None, vmin=-1, vmax=1, num_ticks=5, **kwargs)
 
-def plot_cov_diag(cov, k=None, label=None, klim=None, colors=['k', 'r', 'g', 'b'], portrait=False, logplot=True):
+def plot_cov_diag(cov, k=None, label=None, klim=None, colors=['k', 'r', 'g', 'b'], portrait=False, logplot=True, fracdif_range=None):
     '''Plot the diagonal of a MultipoleCovariance object.
 
     Parameters
@@ -402,10 +402,11 @@ def plot_cov_diag(cov, k=None, label=None, klim=None, colors=['k', 'r', 'g', 'b'
         
             ax2.axhline(0, c=colors[0], ls='dashed')
 
-            frac_lim = 3*np.std((a/b-1)[2:])
-            if(np.isnan(frac_lim) or np.isinf(frac_lim)):
-                frac_lim = 1.0
-            ax2.set_ylim(-frac_lim, frac_lim)
+            if fracdif_range == None:
+                fracdif_range = 3*np.std((a/b-1)[4:])
+            if(np.isnan(fracdif_range) or np.isinf(fracdif_range)):
+                fracdif_range = 1.0
+            ax2.set_ylim(-fracdif_range, fracdif_range)
 
         ax1.set_xticks([])
 
