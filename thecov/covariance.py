@@ -40,6 +40,10 @@ class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
 
         self._pk = {}
 
+        # alphabar is used to scale the shotnoise contributions to the covariance with (1 + alphabar) factors
+        if hasattr(geometry, 'alpha'):
+            self.alphabar = geometry.alpha
+
     @property
     def shotnoise(self):
         '''Shotnoise of the sample.
@@ -50,6 +54,22 @@ class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
             Shotnoise value.'''
 
         return self.geometry.shotnoise
+    
+    def set_shotnoise(self, shotnoise):
+        '''Set shotnoise to specified value. Also scales alphabar so that (1 + alphabar)*I12/I22
+        matches the specified shotnoise.
+        
+        Parameters
+        ----------
+        shotnoise : float
+            shotnoise = (1 + alpha)*I12/I22.
+        '''
+
+        print(f'Estimated shotnoise was {self.geometry.shotnoise}')
+        print(f'Setting shotnoise to {shotnoise}.')
+        self.geometry.shotnoise = shotnoise
+        self.alphabar = shotnoise*self.geometry.I('22')/self.geometry.I('12') - 1
+        print(f'Setting alphabar to {self.alphabar} based on given shotnoise value.')
 
     def set_pk(self, pk, ell, has_shotnoise=False):
         '''Set the input power spectrum to be used for the covariance calculation.
@@ -187,13 +207,13 @@ class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
                     WinKernel[ki, delta_k, 6]*P4[ki]*P0[kj] + \
                     WinKernel[ki, delta_k, 7]*P4[ki]*P2[kj] + \
                     WinKernel[ki, delta_k, 8]*P4[ki]*P4[kj] + \
-                    (1 + self.geometry.alpha)*(
+                    (1 + self.alphabar)*(
                         WinKernel[ki, delta_k, 9]*(P0[ki] + P0[kj])/2. +
                         WinKernel[ki, delta_k, 10]*P2[ki] + WinKernel[ki, delta_k, 11]*P4[ki] +
                         WinKernel[ki, delta_k, 12]*P2[kj] +
                     WinKernel[ki, delta_k, 13]*P4[kj]
                 ) + \
-                    (1 + self.geometry.alpha)**2 * WinKernel[ki, delta_k, 14]
+                    (1 + self.alphabar)**2 * WinKernel[ki, delta_k, 14]
 
         self.set_ell_cov(0, 0, cov[:, :, 0])
         self.set_ell_cov(2, 2, cov[:, :, 1])

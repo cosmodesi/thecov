@@ -1044,7 +1044,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     @property
     def shotnoise(self):
         if self._shotnoise is None:
-            return self.I('12')/self.I('22')
+            return (1 + self.alpha)*self.I('12')/self.I('22')
         else:
             return self._shotnoise
 
