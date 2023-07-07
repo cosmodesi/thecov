@@ -343,6 +343,10 @@ class MultipoleCovariance(Covariance):
             The covariance matrix. Can be an instance of Covariance or a numpy array.
         '''
 
+        if l1 > l2:
+            self.set_ell_cov(l2, l1, cov.T)
+            return
+
         if self._ells == []:
             self._mshape = cov.shape
 
@@ -353,7 +357,7 @@ class MultipoleCovariance(Covariance):
         if l2 not in self.ells:
             self._ells.append(l2)
 
-        self._multipole_covariance[min((l1, l2)), max((l1, l2))] = cov if isinstance(
+        self._multipole_covariance[l1, l2] = cov if isinstance(
             cov, Covariance) else Covariance(cov)
 
     def set_full_cov(self, cov_array, ells=(0, 2, 4)):
