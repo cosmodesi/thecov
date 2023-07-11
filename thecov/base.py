@@ -71,7 +71,7 @@ class Covariance:
     
     def symmetrize(self):
         """Symmetrizes the covariance matrix in place."""
-        self._covariance = (self._covariance + self._covariance.T)/2
+        self.cov = (self.cov + self.cov.T)/2
 
     def symmetrized(self):
         '''Returns a symmetrized copy of the covariance matrix.
@@ -429,11 +429,6 @@ class MultipoleCovariance(Covariance):
         '''
 
         return cls.from_array(np.loadtxt(*args, **kwargs))
-        
-    def symmetrize(self):
-        '''Symmetrizes the covariance matrix in place.'''
-        for _, cov in self._multipole_covariance.items():
-            cov.symmetrize()
 
 
 class FourierBinned:
