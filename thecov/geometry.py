@@ -290,7 +290,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     .. [1] https://arxiv.org/abs/1910.02914
     '''
 
-    def __init__(self, random_catalog=None, Nmesh=None, BoxSize=None, kmax_mask=0.05, delta_k_max=3, kmodes_sampled=400, alpha=1.0, mesh_kwargs=None, tqdm=shell_tqdm):
+    def __init__(self, random_catalog=None, Nmesh=None, BoxSize=None, boxsize_factor = 2.0, kmax_mask=0.05, delta_k_max=3, kmodes_sampled=400, alpha=1.0, mesh_kwargs=None, tqdm=shell_tqdm):
 
         assert Nmesh is None or Nmesh % 2 == 1, 'Please, use an odd integer for Nmesh.'
         
@@ -325,7 +325,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         if BoxSize is None and random_catalog is not None:
             # Estimate BoxSize from random catalog
-            self.BoxSize = max(pos_max - pos_min)*1.1
+            self.BoxSize = max(pos_max - pos_min)*boxsize_factor
             print(f'Using BoxSize = {self.BoxSize}.')
         elif np.ndim(BoxSize) == 0:
             self.BoxSize = BoxSize
