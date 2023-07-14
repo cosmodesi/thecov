@@ -186,8 +186,8 @@ class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
 
         # If the power spectrum for a given ell is not set, use a zero array instead
         P0 = self.get_pk(0, force_return=True, remove_shotnoise=True)
-        P4 = self.get_pk(2, force_return=True)
-        P2 = self.get_pk(4, force_return=True)
+        P2 = self.get_pk(2, force_return=True)
+        P4 = self.get_pk(4, force_return=True)
 
         cov = np.zeros((kbins, kbins, 6))
 
