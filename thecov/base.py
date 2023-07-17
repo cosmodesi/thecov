@@ -1,3 +1,4 @@
+'''Module containing basic classes to deal with covariance matrices.'''
 
 import itertools as itt
 import numpy as np
@@ -5,14 +6,11 @@ import copy
 
 from . import utils
 
+__all__ = ['Covariance', 'MultipoleCovariance']
 
 class Covariance:
-    '''A class to represent a covariance matrix.
-
-    Attributes
-    ----------
-    cov : numpy.ndarray
-        The covariance matrix.
+    '''A class that represents a covariance matrix.
+    Implements basic operations such as correlation matrix computation, etc.
     '''
 
     def __init__(self, covariance=None):
@@ -70,6 +68,22 @@ class Covariance:
         cor = cov / outer_v
         cor[cov == 0] = 0
         return cor
+    
+    def symmetrize(self):
+        """Symmetrizes the covariance matrix in place."""
+        self.cov = (self.cov + self.cov.T)/2
+
+    def symmetrized(self):
+        '''Returns a symmetrized copy of the covariance matrix.
+        
+        Returns
+        -------
+        Covariance
+            Covariance object corresponding to the symmetrized covariance matrix.
+        '''
+        new_cov = copy.deepcopy(self)
+        new_cov.symmetrize()
+        return new_cov
 
     def __add__(self, y):
         obj = copy.deepcopy(self)
@@ -99,7 +113,7 @@ class Covariance:
 
     @property
     def T(self):
-        '''This function transposes the covariance matrix.
+        '''Returns the transpose of the covariance matrix.
 
         Returns
         -------
@@ -314,7 +328,7 @@ class MultipoleCovariance(Covariance):
         if (l1, l2) in self._multipole_covariance:
             return self._multipole_covariance[l1, l2]
         elif force_return:
-            return np.zeros(self._mshape)
+            return Covariance(np.zeros(self._mshape))
 
     def set_ell_cov(self, l1, l2, cov):
         '''Sets the covariance matrix for a given pair of multipoles.
@@ -329,6 +343,10 @@ class MultipoleCovariance(Covariance):
             The covariance matrix. Can be an instance of Covariance or a numpy array.
         '''
 
+        if l1 > l2:
+            self.set_ell_cov(l2, l1, cov.T)
+            return
+
         if self._ells == []:
             self._mshape = cov.shape
 
@@ -339,7 +357,7 @@ class MultipoleCovariance(Covariance):
         if l2 not in self.ells:
             self._ells.append(l2)
 
-        self._multipole_covariance[min((l1, l2)), max((l1, l2))] = cov if isinstance(
+        self._multipole_covariance[l1, l2] = cov if isinstance(
             cov, Covariance) else Covariance(cov)
 
     def set_full_cov(self, cov_array, ells=(0, 2, 4)):
@@ -427,6 +445,11 @@ class FourierBinned:
     nmodes: numpy.ndarray, optional
         The number of modes to be used in the calculation. It is an optional parameter.
         If omitted, it is calculated from the volume of spherical shells.
+
+    Methods
+    -------
+    set_kbins
+        This function defines the k-bins. Only linear binning is supported.
     '''
 
     def set_kbins(self, kmin, kmax, dk, nmodes=None):
@@ -489,6 +512,20 @@ class FourierBinned:
         '''
 
         return np.arange(self.kmin + self.dk/2, self.kmax + self.dk/2, self.dk)
+    
+    @property
+    def kavg(self):
+        '''
+        Returns the average k of the k-bins. Assumes spherical approximation to
+        integrate k-modes, which fails for small k.
+        
+        Returns
+        -------
+        numpy.ndarray
+            The average k of the k-bins.
+        '''
+        return 3/4*(self.kedges[1:]**4 - self.kedges[:-1]**4)/ \
+                   (self.kedges[1:]**3 - self.kedges[:-1]**3)
 
     @property
     def kedges(self):
@@ -559,3 +596,6 @@ class FourierBinned:
 
         self._nmodes = nmodes
         return nmodes
+
+class MultipoleFourierCovariance(MultipoleCovariance, FourierBinned):
+    pass
