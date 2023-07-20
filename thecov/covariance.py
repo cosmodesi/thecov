@@ -23,7 +23,7 @@ from . import base, geometry
 
 __all__ = ['GaussianCovariance']
 
-class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
+class GaussianCovariance(base.MultipoleFourierCovariance):
     '''Gaussian covariance matrix of power spectrum multipoles in a given geometry.
 
     Attributes
@@ -33,8 +33,7 @@ class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
     '''
 
     def __init__(self, geometry):
-        base.MultipoleCovariance.__init__(self)
-        base.FourierBinned.__init__(self)
+        base.MultipoleFourierCovariance.__init__(self)
 
         self.geometry = geometry
 
