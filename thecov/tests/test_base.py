@@ -84,6 +84,6 @@ def test_multipole_covariance_addition():
     assert (addition.get_ell_cov(0,4).cov == cov1_04 + cov2_04).all()
     assert (addition.get_ell_cov(2,4).cov == cov1_24 + cov2_24).all()
 
-    assert addition.get_ell_cov(0,2).cov == cov1_02 + cov2_02
-    assert addition.get_ell_cov(0,4).cov == cov1_04 + cov2_04
-    assert addition.get_ell_cov(2,4).cov == cov1_24 + cov2_24
+
+
+
