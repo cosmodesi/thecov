@@ -596,11 +596,15 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         kfun = 2*np.pi/self.BoxSize
 
-        # sample kmodes from each k1 bin
-        # kmodes = np.array([[utils.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(
-        #     self.kmodes_sampled)] for kmin, kmax in zip(self.kedges[:-1], self.kedges[1:])])
-        
-        kmodes, Nmodes = utils.sample_from_cube(self.kmax/kfun, self.dk/kfun, self.kmodes_sampled)
+        kmodes = np.array([[utils.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(
+            self.kmodes_sampled)] for kmin, kmax in zip(self.kedges[:-1], self.kedges[1:])])
+
+        Nmodes = utils.nmodes(self.BoxSize**3, self.kedges[:-1], self.kedges[1:])
+
+        # sample kmodes from each k1 bin        
+        # kmodes, Nmodes = utils.sample_kmodes(self.kmax, self.dk, self.BoxSize, self.kmodes_sampled)
+
+        # kmodes, Nmodes = utils.sample_from_cube(self.kmax/kfun, self.dk/kfun, self.kmodes_sampled)
 
         # Note: as the window falls steeply with k, only low-k regions are needed for the calculation.
         # Therefore, high-k modes in the FFTs can be discarded
