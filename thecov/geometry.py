@@ -488,12 +488,12 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         # PFFT omits modes that are determined by the Hermitian condition. Adding them:
         fourier_full = utils.r2c_to_c2c_3d(fourier)
 
-        return fft.fftshift(fourier_full)[::-1, ::-1, ::-1] * self.ngals
+        return fft.fftshift(fourier_full) * self.ngals
 
     def _unformat_fft(self, fourier, window):
 
         fourier_cut = fft.ifftshift(
-            fourier[::-1, ::-1, ::-1])[:, :, :fourier.shape[2]//2+1] / self.ngals
+            fourier)[:, :, :fourier.shape[2]//2+1] / self.ngals
 
         return np.conj(fourier_cut) if window == '12' else fourier_cut
 
