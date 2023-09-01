@@ -137,6 +137,45 @@ class Covariance:
         '''
 
         return self.cov.shape
+    
+    @property
+    def eig(self):
+        '''Compute the eigenvalues and right eigenvectors of the covariance.
+
+        Returns
+        -------
+        A namedtuple with the following attributes:
+            eigenvalues
+            (..., M) array
+                The eigenvalues, each repeated according to its multiplicity.
+                The eigenvalues are not necessarily ordered. The resulting
+                array will be of complex type, unless the imaginary part is
+                zero in which case it will be cast to a real type. When a is
+                real the resulting eigenvalues will be real (0 imaginary
+                part) or occur in conjugate pairs
+
+            eigenvectors
+            (...), M, M) array
+                The normalized (unit “length”) eigenvectors, such that the
+                column eigenvectors[:,i] is the eigenvector corresponding to
+                the eigenvalue eigenvalues[i].
+        '''
+
+        return np.linalg.eig(self.cov)
+    
+    @property
+    def eigvals(self):
+        '''Compute the eigenvalues of the covariance.
+
+        Returns
+        -------
+        (..., M,) ndarray
+            The eigenvalues, each repeated according to its multiplicity.
+            They are not necessarily ordered, nor are they necessarily
+            real for real matrices.
+        '''
+
+        return np.linalg.eigvals(self.cov)
 
     def save(self, filename):
         '''Saves the covariance as a .npz file with a specified filename.

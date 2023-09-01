@@ -159,6 +159,9 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
         for l1, l2 in itt.combinations_with_replacement(self.ells, r=2):
             self.set_ell_cov(l1, l2, 2/self.nmodes * np.diag(cov[l1, l2]))
 
+        if (self.eigvals < 0).any():
+                    print('WARNING: Covariance matrix is not positive definite.')
+
         return self
 
     def _compute_covariance_survey(self):
@@ -221,6 +224,12 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
         self.set_ell_cov(0, 2, cov[:, :, 3])
         self.set_ell_cov(0, 4, cov[:, :, 4])
         self.set_ell_cov(2, 4, cov[:, :, 5])
+
+        if (self.eigvals < 0).any():
+            print('WARNING: Covariance matrix is not positive definite.')
+
+        if not np.allclose(self.cov, self.cov.T):
+            print('WARNING: Covariance matrix is not symmetric.')
 
         return self
 
