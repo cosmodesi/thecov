@@ -137,6 +137,45 @@ class Covariance:
         '''
 
         return self.cov.shape
+    
+    @property
+    def eig(self):
+        '''Compute the eigenvalues and right eigenvectors of the covariance.
+
+        Returns
+        -------
+        A namedtuple with the following attributes:
+            eigenvalues
+            (..., M) array
+                The eigenvalues, each repeated according to its multiplicity.
+                The eigenvalues are not necessarily ordered. The resulting
+                array will be of complex type, unless the imaginary part is
+                zero in which case it will be cast to a real type. When a is
+                real the resulting eigenvalues will be real (0 imaginary
+                part) or occur in conjugate pairs
+
+            eigenvectors
+            (...), M, M) array
+                The normalized (unit “length”) eigenvectors, such that the
+                column eigenvectors[:,i] is the eigenvector corresponding to
+                the eigenvalue eigenvalues[i].
+        '''
+
+        return np.linalg.eig(self.cov)
+    
+    @property
+    def eigvals(self):
+        '''Compute the eigenvalues of the covariance.
+
+        Returns
+        -------
+        (..., M,) ndarray
+            The eigenvalues, each repeated according to its multiplicity.
+            They are not necessarily ordered, nor are they necessarily
+            real for real matrices.
+        '''
+
+        return np.linalg.eigvals(self.cov)
 
     def save(self, filename):
         '''Saves the covariance as a .npz file with a specified filename.
@@ -598,4 +637,79 @@ class FourierBinned:
         return nmodes
 
 class MultipoleFourierCovariance(MultipoleCovariance, FourierBinned):
-    pass
+
+    def __init__(self):
+        MultipoleCovariance.__init__(self)
+        FourierBinned.__init__(self)
+    
+    @property
+    def kmid_matrices(self):
+        kfull = np.concatenate([self.kmid for _ in self.ells])
+        k1 = np.einsum('i,j->ij', kfull, np.ones_like(kfull))
+        k2 = k1.T
+
+        return k1, k2
+
+    @property
+    def ell_matrices(self):
+        ell_array = np.einsum('i,j->ij', self.ells, np.ones(self.kbins)).flatten()
+
+        ell1 = np.einsum('i,j->ij', ell_array, np.ones_like(ell_array))
+        ell2 = ell1.T
+
+        return ell1, ell2
+    
+
+    def save_table(self, filename, ells_both_ways=False, fmt=['%.d', '%.d', '%.4f', '%.4f', '%.8e']):
+        k1, k2 = self.kmid_matrices
+        ell1, ell2 = self.ell_matrices
+
+        cov = self.cov
+
+        mask = ell1 <= ell2 if not ells_both_ways else np.ones_like(ell1, dtype=bool)
+
+        np.savetxt(filename, np.concatenate([ell1[mask].reshape(-1, 1),
+                                             ell2[mask].reshape(-1, 1),
+                                               k1[mask].reshape(-1, 1),
+                                               k2[mask].reshape(-1, 1),
+                                              cov[mask].reshape(-1, 1)], axis=1), fmt=fmt, header='ell1 ell2 kmid1 kmid2 cov')
+    def load_table(self, filename):
+        ell1, ell2, k1, k2, value = np.loadtxt(filename).T
+
+        k = np.unique(k1)
+        kbins = len(k)
+
+        assert np.allclose(k, np.unique(k2)), "k1 and k2 are not consistent"
+
+        dk = np.mean(np.diff(k))
+        kmin = k.min() - dk/2
+        kmax = k.max() + dk/2
+
+        ells = np.unique(ell1)
+        assert np.allclose(ells, np.unique(ell2)), "ell1 and ell2 are not consistent"
+
+        ells_both_ways = len(value) == (len(ells)*kbins)**2
+        ells_one_way   = len(value) == (len(ells)**2 + len(ells))/2 * kbins**2
+
+        assert ells_one_way or ells_both_ways, 'length of covariance file doesn\'nt match'
+
+        self.set_kbins(kmin, kmax, dk)
+
+        assert np.allclose(np.unique(k1), self.kmid), "k bins are not linearly spaced"
+
+        kmid_matrix = np.einsum('i,j->ij', k, np.ones_like(k))
+
+        for l1, l2 in itt.combinations_with_replacement(ells, r=2):
+            block_mask = (ell1 == l1) & (ell2 == l2)
+            assert np.allclose(k1[block_mask].reshape(kmid_matrix.shape),   kmid_matrix)
+            assert np.allclose(k2[block_mask].reshape(kmid_matrix.T.shape), kmid_matrix.T)
+            c = value[block_mask].reshape(kbins, kbins)
+            self.set_ell_cov(l1, l2, c)
+
+        return self
+    
+    @classmethod
+    def from_table(cls, filename):
+        cov = cls()
+        cov.load_table(filename)
+        return cov

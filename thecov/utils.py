@@ -139,6 +139,24 @@ def sample_from_cube(rmax, dr, max_modes:int=200):
 
     return modes, Nmodes
 
+def sample_kmodes(kmax, dk, BoxSize, kmodes_sampled, shell_approx_bin=10):
+    
+    # Wavelength where spherical shell approximation kicks in
+    k_shell = shell_approx_bin*dk
+
+    kfun = 2*np.pi/BoxSize
+
+    # Uses full cube from k = 0 to k_shell
+    cube_modes, cube_Nmodes = sample_from_cube(k_shell/kfun, dk/kfun, max_modes=kmodes_sampled)
+    
+    # Uses spherical shell approximation from k = k_shell to kmax
+    kedges_shell = np.arange(k_shell, kmax + dk, dk)
+    shell_modes = [np.array([sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(
+                    kmodes_sampled)]) for kmin, kmax in zip(kedges_shell[:-1], kedges_shell[1:])]
+    shell_Nmodes = nmodes(BoxSize**3, kedges_shell[:-1], kedges_shell[1:])
+    
+    return cube_modes + shell_modes, np.array(cube_Nmodes + list(shell_Nmodes))
+
 def nmodes(volume, kmin, kmax):
     '''Compute the number of modes in a given shell.
     

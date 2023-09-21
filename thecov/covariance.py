@@ -23,7 +23,7 @@ from . import base, geometry
 
 __all__ = ['GaussianCovariance']
 
-class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
+class GaussianCovariance(base.MultipoleFourierCovariance):
     '''Gaussian covariance matrix of power spectrum multipoles in a given geometry.
 
     Attributes
@@ -33,8 +33,7 @@ class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
     '''
 
     def __init__(self, geometry):
-        base.MultipoleCovariance.__init__(self)
-        base.FourierBinned.__init__(self)
+        base.MultipoleFourierCovariance.__init__(self)
 
         self.geometry = geometry
 
@@ -52,8 +51,9 @@ class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
         -------
         float
             Shotnoise value.'''
-
-        return self.geometry.shotnoise
+        
+        return (1 + self.alphabar)*self.geometry.I('12')/self.geometry.I('22')
+        # return self.geometry.shotnoise
     
     def set_shotnoise(self, shotnoise):
         '''Set shotnoise to specified value. Also scales alphabar so that (1 + alphabar)*I12/I22
@@ -67,7 +67,7 @@ class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
 
         print(f'Estimated shotnoise was {self.geometry.shotnoise}')
         print(f'Setting shotnoise to {shotnoise}.')
-        self.geometry.shotnoise = shotnoise
+        # self.geometry.shotnoise = shotnoise
         self.alphabar = shotnoise*self.geometry.I('22')/self.geometry.I('12') - 1
         print(f'Setting alphabar to {self.alphabar} based on given shotnoise value.')
 
@@ -159,6 +159,9 @@ class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
         for l1, l2 in itt.combinations_with_replacement(self.ells, r=2):
             self.set_ell_cov(l1, l2, 2/self.nmodes * np.diag(cov[l1, l2]))
 
+        if (self.eigvals < 0).any():
+                    print('WARNING: Covariance matrix is not positive definite.')
+
         return self
 
     def _compute_covariance_survey(self):
@@ -221,6 +224,12 @@ class GaussianCovariance(base.MultipoleCovariance, base.FourierBinned):
         self.set_ell_cov(0, 2, cov[:, :, 3])
         self.set_ell_cov(0, 4, cov[:, :, 4])
         self.set_ell_cov(2, 4, cov[:, :, 5])
+
+        if (self.eigvals < 0).any():
+            print('WARNING: Covariance matrix is not positive definite.')
+
+        if not np.allclose(self.cov, self.cov.T):
+            print('WARNING: Covariance matrix is not symmetric.')
 
         return self
 

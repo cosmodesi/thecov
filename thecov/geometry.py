@@ -355,6 +355,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             'interlaced':  True,
             'compensated': True,
             'resampler':   'tsc',
+            'position': 'BoxPosition',
+            'weight': 'WEIGHT',
         }
 
         if mesh_kwargs is not None:
@@ -398,7 +400,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         w = W.lower().replace("i", "").replace("w", "")
         if w not in self._I:
             self.W_cat(w)
-            self._I[w] = (self._randoms[f'W{w}'].sum() * self.alpha).compute()
+            self._I[w] = ((self._randoms[f'W{w}']*self._randoms[f'WEIGHT']).sum() * self.alpha).compute()
         return self._I[w]
 
     def W(self, W):
@@ -450,7 +452,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         with self.tqdm(total=22, desc=f'Computing moments of W{w}') as pbar:
             self.set_cartesian_fft(f'W{w}', self._format_fft(self.randoms.to_mesh(
-                value=f'W{w}', position='BoxPosition', **mesh_kwargs).paint(mode='complex')))
+                value=f'W{w}',**mesh_kwargs).paint(mode='complex')))
             
             # Check if zero mode of FFT Wij is consistent with integral Iij
             center = self.Nmesh//2
@@ -470,7 +472,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                 self.randoms[label] = self.randoms[f'W{w}'] * \
                     x[i]*x[j] / (x[0]**2 + x[1]**2 + x[2]**2)
                 self.set_cartesian_fft(label, self._format_fft(self.randoms.to_mesh(
-                    value=label, position='BoxPosition', **mesh_kwargs).paint(mode='complex')))
+                    value=label, **mesh_kwargs).paint(mode='complex')))
 
                 pbar.update(1)
 
@@ -479,7 +481,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                 self.randoms[label] = self.randoms[f'W{w}'] * x[i] * \
                     x[j]*x[k]*x[l] / (x[0]**2 + x[1]**2 + x[2]**2)**2
                 self.set_cartesian_fft(label, self._format_fft(self.randoms.to_mesh(
-                    value=label, position='BoxPosition', **mesh_kwargs).paint(mode='complex')))
+                    value=label, **mesh_kwargs).paint(mode='complex')))
 
                 pbar.update(1)
 
@@ -488,12 +490,12 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         # PFFT omits modes that are determined by the Hermitian condition. Adding them:
         fourier_full = utils.r2c_to_c2c_3d(fourier)
 
-        return fft.fftshift(fourier_full)[::-1, ::-1, ::-1] * self.ngals
+        return fft.fftshift(fourier_full) * self.ngals
 
     def _unformat_fft(self, fourier, window):
 
         fourier_cut = fft.ifftshift(
-            fourier[::-1, ::-1, ::-1])[:, :, :fourier.shape[2]//2+1] / self.ngals
+            fourier)[:, :, :fourier.shape[2]//2+1] / self.ngals
 
         return np.conj(fourier_cut) if window == '12' else fourier_cut
 
@@ -596,11 +598,15 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         kfun = 2*np.pi/self.BoxSize
 
-        # sample kmodes from each k1 bin
-        # kmodes = np.array([[utils.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(
-        #     self.kmodes_sampled)] for kmin, kmax in zip(self.kedges[:-1], self.kedges[1:])])
-        
-        kmodes, Nmodes = utils.sample_from_cube(self.kmax/kfun, self.dk/kfun, self.kmodes_sampled)
+        kmodes = np.array([[utils.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(
+            self.kmodes_sampled)] for kmin, kmax in zip(self.kedges[:-1], self.kedges[1:])])
+
+        Nmodes = utils.nmodes(self.BoxSize**3, self.kedges[:-1], self.kedges[1:])
+
+        # sample kmodes from each k1 bin        
+        # kmodes, Nmodes = utils.sample_kmodes(self.kmax, self.dk, self.BoxSize, self.kmodes_sampled)
+
+        # kmodes, Nmodes = utils.sample_from_cube(self.kmax/kfun, self.dk/kfun, self.kmodes_sampled)
 
         # Note: as the window falls steeply with k, only low-k regions are needed for the calculation.
         # Therefore, high-k modes in the FFTs can be discarded
