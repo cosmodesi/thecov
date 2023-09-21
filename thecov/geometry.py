@@ -356,7 +356,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             'compensated': True,
             'resampler':   'tsc',
             'position': 'BoxPosition',
-            'weight': 'WEIGHT',
+            # 'weight': 'WEIGHT',
         }
 
         if mesh_kwargs is not None:
@@ -381,7 +381,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         if f'W{w}' not in self._randoms.columns:
             self._randoms[f'W{w}'] = self._randoms['NZ']**(
-                int(w[0])-1) * self._randoms['WEIGHT_FKP']**int(w[1])
+                int(w[0])-1) * self._randoms['WEIGHT_FKP']**int(w[1])*self._randoms[f'WEIGHT']
         return self._randoms[f'W{w}']
 
     def I(self, W):
@@ -400,7 +400,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         w = W.lower().replace("i", "").replace("w", "")
         if w not in self._I:
             self.W_cat(w)
-            self._I[w] = ((self._randoms[f'W{w}']*self._randoms[f'WEIGHT']).sum() * self.alpha).compute()
+            self._I[w] = (self._randoms[f'W{w}'].sum() * self.alpha).compute()
         return self._I[w]
 
     def W(self, W):
