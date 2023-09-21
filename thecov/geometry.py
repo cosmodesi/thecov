@@ -494,10 +494,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
     def _unformat_fft(self, fourier, window):
 
-        fourier_cut = fft.ifftshift(
-            fourier)[:, :, :fourier.shape[2]//2+1] / self.ngals
-
-        return np.conj(fourier_cut) if window == '12' else fourier_cut
+        return fft.ifftshift(fourier)[:, :, :fourier.shape[2]//2+1] / self.ngals
 
     def set_cartesian_fft(self, label, W):
         '''Set the FFT of the window function Wij.
