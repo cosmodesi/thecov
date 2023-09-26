@@ -22,6 +22,7 @@ from scipy import fft
 
 from tqdm import tqdm as shell_tqdm
 
+import os
 from . import base, utils
 
 __all__ = ['BoxGeometry', 'SurveyGeometry']
@@ -34,6 +35,7 @@ W_LABELS = ['12', '12xx', '12xy', '12xz', '12yy', '12yz', '12zz', '12xxxx', '12x
 class Geometry(ABC):
 
     def save_attributes(self, filename, attrs):
+        utils.mkdir(os.path.dirname(filename))
         np.savez(filename if filename.strip()
                  [-4:] == '.npz' else f'{filename}.npz', **{a: getattr(self, a) for a in attrs})
 
@@ -488,6 +490,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         filename : str
             Name of the file to save the FFTs of the window functions Wij.
         '''
+        utils.mkdir(os.path.dirname(filename))
         np.savez(filename if filename.endswith('.npz') else f'{filename}.npz', **{f'W{k.replace("W", "")}': self._W[k] for k in self._W}, **{
                  f'I{k.replace("I", "")}': self._I[k] for k in self._I}, **{name: getattr(self, name) for name in ['boxsize', 'nmesh', 'alpha']})
 

@@ -1,8 +1,10 @@
 '''Module containing basic classes to deal with covariance matrices.'''
 
+import os
 import itertools as itt
-import numpy as np
 import copy
+
+import numpy as np
 
 from . import utils
 
@@ -185,7 +187,7 @@ class Covariance:
         filename : string
             The name of the file where the covariance matrix will be saved.
         '''
-
+        utils.mkdir(os.path.dirname(filename))
         np.savez(filename if filename.strip(
         )[-4:] in ('.npz', '.npy') else f'{filename}.npz', covariance=self.cov)
 
@@ -197,7 +199,7 @@ class Covariance:
         filename : string
             The name of the file where the covariance matrix will be saved.
         '''
-
+        utils.mkdir(os.path.dirname(filename))
         np.savetxt(filename, self.cov)
 
     @classmethod
@@ -667,7 +669,7 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierBinned):
         cov = self.cov
 
         mask = ell1 <= ell2 if not ells_both_ways else np.ones_like(ell1, dtype=bool)
-
+        utils.mkdir(os.path.dirname(filename))
         np.savetxt(filename, np.concatenate([ell1[mask].reshape(-1, 1),
                                              ell2[mask].reshape(-1, 1),
                                                k1[mask].reshape(-1, 1),
