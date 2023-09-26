@@ -68,14 +68,14 @@ class Covariance:
         cor = cov / outer_v
         cor[cov == 0] = 0
         return cor
-    
+
     def symmetrize(self):
         """Symmetrizes the covariance matrix in place."""
         self.cov = (self.cov + self.cov.T)/2
 
     def symmetrized(self):
         '''Returns a symmetrized copy of the covariance matrix.
-        
+
         Returns
         -------
         Covariance
@@ -97,14 +97,14 @@ class Covariance:
         obj.cov -= (y.cov if isinstance(y, Covariance) else y)
 
         return obj
-    
+
     def __mul__(self, y):
 
         obj = copy.deepcopy(self)
         obj.cov *= y
 
         return obj
-    
+
     def __truediv__(self, y):
         obj = copy.deepcopy(self)
         obj.cov /= y
@@ -137,7 +137,7 @@ class Covariance:
         '''
 
         return self.cov.shape
-    
+
     @property
     def eig(self):
         '''Compute the eigenvalues and right eigenvectors of the covariance.
@@ -162,7 +162,7 @@ class Covariance:
         '''
 
         return np.linalg.eig(self.cov)
-    
+
     @property
     def eigvals(self):
         '''Compute the eigenvalues of the covariance.
@@ -278,21 +278,21 @@ class MultipoleCovariance(Covariance):
 
     def __sub__(self, y):
         obj = copy.deepcopy(self)
-        
+
         if isinstance(y, MultipoleCovariance):
             assert self.ells == y.ells, "ells are not the same"
 
         obj.set_full_cov(self.cov - (y.cov if isinstance(y, Covariance) else y), self.ells)
 
         return obj
-    
+
     def __mul__(self, y):
         obj = copy.deepcopy(self)
 
         obj.set_full_cov(self.cov * y, self.ells)
 
         return obj
-    
+
     def __truediv__(self, y):
         obj = copy.deepcopy(self)
 
@@ -317,7 +317,7 @@ class MultipoleCovariance(Covariance):
             cov[i*self._mshape[0]:(i+1)*self._mshape[0],
                 j*self._mshape[1]:(j+1)*self._mshape[1]] = self.get_ell_cov(l1, l2).cov
         return cov
-    
+
     @cov.setter
     def cov(self, cov):
         '''Sets the full covariance matrix from covariances for different multipoles stacked
@@ -428,7 +428,7 @@ class MultipoleCovariance(Covariance):
             self.set_ell_cov(l1, l2, c[i*c.shape[0]//len(ells):(i+1)*c.shape[0]//len(ells),
                                        j*c.shape[1]//len(ells):(j+1)*c.shape[1]//len(ells)])
         return self
-    
+
 
     @classmethod
     def from_array(cls, *args, **kwargs):
@@ -449,7 +449,7 @@ class MultipoleCovariance(Covariance):
 
         cov = cls()
         cov.set_full_cov(*args, **kwargs)
-        
+
         return cov
 
     @classmethod
@@ -517,7 +517,7 @@ class FourierBinned:
     @property
     def is_kbins_set(self):
         '''Check if k-bins were defined.
-        
+
         Returns
         -------
             bool, True if k-bins were defined, False otherwise.
@@ -530,7 +530,7 @@ class FourierBinned:
     @property
     def kbins(self):
         '''Returns the total number of k-bins.
-        
+
         Returns
         -------
         int
@@ -543,7 +543,7 @@ class FourierBinned:
     def kmid(self):
         '''
         Returns the midpoints of the k-bins.
-        
+
         Returns
         -------
         numpy.ndarray
@@ -551,13 +551,13 @@ class FourierBinned:
         '''
 
         return np.arange(self.kmin + self.dk/2, self.kmax + self.dk/2, self.dk)
-    
+
     @property
     def kavg(self):
         '''
         Returns the average k of the k-bins. Assumes spherical approximation to
         integrate k-modes, which fails for small k.
-        
+
         Returns
         -------
         numpy.ndarray
@@ -570,7 +570,7 @@ class FourierBinned:
     def kedges(self):
         '''
         Returns the edges of the k-bins.
-        
+
         Returns
         -------
         numpy.ndarray
@@ -582,7 +582,7 @@ class FourierBinned:
     @property
     def kfun(self):
         '''Fundamental wavenumber of the box 2*pi/Lbox.
-        
+
         Returns
         -------
         float
@@ -594,7 +594,7 @@ class FourierBinned:
     @property
     def volume(self):
         '''Returns the volume of the object. If not available, return that of the associated geometry.
-        
+
         Returns
         -------
         float
@@ -611,7 +611,7 @@ class FourierBinned:
     def nmodes(self):
         '''This function calculates the number of modes per k-bin shell. If nmodes was not provided, it is
         extimated from the volume of each shell.
-        
+
         Returns
         -------
         numpy.ndarray
@@ -626,7 +626,7 @@ class FourierBinned:
     @nmodes.setter
     def nmodes(self, nmodes):
         '''Manually sets the number of modes per k-bin shell.
-        
+
         Parameters
         -------
         nmodes : numpy.ndarray
@@ -641,7 +641,7 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierBinned):
     def __init__(self):
         MultipoleCovariance.__init__(self)
         FourierBinned.__init__(self)
-    
+
     @property
     def kmid_matrices(self):
         kfull = np.concatenate([self.kmid for _ in self.ells])
@@ -658,7 +658,7 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierBinned):
         ell2 = ell1.T
 
         return ell1, ell2
-    
+
 
     def save_table(self, filename, ells_both_ways=False, fmt=['%.d', '%.d', '%.4f', '%.4f', '%.8e']):
         k1, k2 = self.kmid_matrices
@@ -707,7 +707,7 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierBinned):
             self.set_ell_cov(l1, l2, c)
 
         return self
-    
+
     @classmethod
     def from_table(cls, filename):
         cov = cls()

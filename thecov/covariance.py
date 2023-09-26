@@ -16,8 +16,11 @@ Example
 >>> covariance.compute_covariance()
 """
 
-import numpy as np
+import logging
+import warnings
 import itertools as itt
+
+import numpy as np
 
 from . import base, geometry
 
@@ -31,6 +34,7 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
     geometry : geometry.Geometry
         Geometry of the survey. Can be a BoxGeometry or a SurveyGeometry object.
     '''
+    logger = logging.getLogger('GaussianCovariance')
 
     def __init__(self, geometry):
         base.MultipoleFourierCovariance.__init__(self)
@@ -46,30 +50,30 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
     @property
     def shotnoise(self):
         '''Shotnoise of the sample.
-        
+
         Returns
         -------
         float
             Shotnoise value.'''
-        
+
         return (1 + self.alphabar)*self.geometry.I('12')/self.geometry.I('22')
         # return self.geometry.shotnoise
-    
+
     def set_shotnoise(self, shotnoise):
         '''Set shotnoise to specified value. Also scales alphabar so that (1 + alphabar)*I12/I22
         matches the specified shotnoise.
-        
+
         Parameters
         ----------
         shotnoise : float
             shotnoise = (1 + alpha)*I12/I22.
         '''
 
-        print(f'Estimated shotnoise was {self.geometry.shotnoise}')
-        print(f'Setting shotnoise to {shotnoise}.')
+        self.logger.info(f'Estimated shotnoise was {self.geometry.shotnoise}')
+        self.logger.info(f'Setting shotnoise to {shotnoise}.')
         # self.geometry.shotnoise = shotnoise
         self.alphabar = shotnoise*self.geometry.I('22')/self.geometry.I('12') - 1
-        print(f'Setting alphabar to {self.alphabar} based on given shotnoise value.')
+        self.logger.info(f'Setting alphabar to {self.alphabar} based on given shotnoise value.')
 
     def set_pk(self, pk, ell, has_shotnoise=False):
         '''Set the input power spectrum to be used for the covariance calculation.
@@ -85,7 +89,7 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
         '''
 
         if ell == 0 and has_shotnoise:
-            print(f'Removing shotnoise = {self.shotnoise} from ell = 0.')
+            self.logger.info(f'Removing shotnoise = {self.shotnoise} from ell = 0.')
             self._pk[ell] = pk - self.shotnoise
         else:
             self._pk[ell] = pk
@@ -106,7 +110,7 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
         if ell in self._pk.keys():
             pk = self._pk[ell]
             if (not remove_shotnoise) and ell == 0:
-                print(f'Adding shotnoise = {self.shotnoise} to ell = 0.')
+                self.logger.info(f'Adding shotnoise = {self.shotnoise} to ell = 0.')
                 return pk + self.shotnoise
             return pk
         elif force_return:
@@ -160,7 +164,7 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
             self.set_ell_cov(l1, l2, 2/self.nmodes * np.diag(cov[l1, l2]))
 
         if (self.eigvals < 0).any():
-                    print('WARNING: Covariance matrix is not positive definite.')
+            warnings.warn('Covariance matrix is not positive definite.')
 
         return self
 
@@ -226,10 +230,9 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
         self.set_ell_cov(2, 4, cov[:, :, 5])
 
         if (self.eigvals < 0).any():
-            print('WARNING: Covariance matrix is not positive definite.')
+            warnings.warn('Covariance matrix is not positive definite.')
 
         if not np.allclose(self.cov, self.cov.T):
-            print('WARNING: Covariance matrix is not symmetric.')
+            warnings.warn('Covariance matrix is not symmetric.')
 
         return self
-
