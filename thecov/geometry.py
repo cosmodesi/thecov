@@ -258,7 +258,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     Attributes
     ----------
     randoms : Catalog
-        Catalog of randoms.
+        Catalog of randoms, with (at least) column 'POSITION'. (Optionally: WEIGHT, WEIGHT_FKP, NZ).
     nmesh : int
         Number of mesh points in each dimension to be used in the calculation of the FFTs.
     boxsize : float
@@ -295,7 +295,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     '''
     logger = logging.getLogger('SurveyGeometry')
 
-    def __init__(self, randoms, nmesh=None, boxsize=None, boxpad=2.0, kmax_mask=0.05, delta_k_max=3, kmodes_sampled=400, alpha=1.0, tqdm=shell_tqdm, **kwargs):
+    def __init__(self, randoms, nmesh=None, cellsize=None, boxsize=None, boxpad=2.0, kmax_mask=0.05, delta_k_max=3, kmodes_sampled=400, alpha=1.0, nthreads=None, tqdm=shell_tqdm, **kwargs):
 
         base.FourierBinned.__init__(self)
 
@@ -304,6 +304,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self.kmodes_sampled = kmodes_sampled
 
         self._shotnoise = None
+        self.nthreads = nthreads
+        if self.nthreads is None:
+            self.nthreads = int(os.environ.get('OMP_NUM_THREADS', os.cpu_count()))
 
         self.tqdm = tqdm
 
@@ -320,30 +323,33 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             from mockfactory import RedshiftDensityInterpolator
             import healpy as hp
             nside = 512
-            distance = np.sqrt(np.sum(randoms['POSITION']**2))
+            distance = np.sqrt(np.sum(randoms['POSITION']**2, axis=-1))
             xyz = randoms['POSITION'] / distance[:, None]
             hpixel = hp.vec2pix(nside, *xyz.T)
             unique_hpixels = np.unique(hpixel)
             fsky = len(unique_hpixels) / hp.nside2npix(nside)
             self.logger.info(f'fsky estimated from randoms: {fsky:.3f}')
             nbar = RedshiftDensityInterpolator(z=distance, fsky=fsky)
-            randoms['NZ'] = self.alpha * nbar(distance)
+            self._randoms['NZ'] = self.alpha * nbar(distance)
+        if nmesh is None and cellsize is None:
+            # Pick value that will give at least k_mask = kmax_mask in the FFTs
+            cellsize = np.pi / kmax_mask / (1. + 1e-9)
 
         self._mesh = CatalogMesh(data_positions=self._randoms['POSITION'], data_weights=self._randoms['WEIGHT'],
-                                 position_type='pos', nmesh=nmesh, boxsize=boxsize, boxpad=boxpad, dtype='c16',
+                                 position_type='pos', nmesh=nmesh, cellsize=cellsize, boxsize=boxsize, boxpad=boxpad, dtype='c16',
                                  **{'interlacing': 3, 'resampler': 'tsc', **kwargs})
         self.logger.info(f'Using box size {self._mesh.boxsize}, box center {self._mesh.boxcenter} and nmesh {self._mesh.nmesh}.')
         self.boxsize = self._mesh.boxsize[0]
         self.nmesh = self._mesh.nmesh[0]
-        assert np.allclose(self._mesh.boxsize, self.boxsize) and np.all(self._mesh.nmesh, self.nmesh)
+        assert np.allclose(self._mesh.boxsize, self.boxsize) and np.all(self._mesh.nmesh == self.nmesh)
 
-        k_nyquist = np.pi * self.mesh.nmesh / self._mesh.boxsize
-        self.logger.info(f'Nyquist wavelength of window FFTs = {k_nyquist}.')
+        knyquist = np.pi * self.nmesh / self.boxsize
+        self.logger.info(f'Nyquist wavelength of window FFTs = {knyquist}.')
 
-        if np.any(k_nyquist < kmax_mask):
-            warnings.warn('Nyquist frequency smaller than required kmax_mask = {kmax_mask}.')
+        if knyquist < kmax_mask:
+            warnings.warn(f'Nyquist frequency {knyquist} smaller than required kmax_mask = {kmax_mask}.')
 
-        self.logger.info(f'Average of {self._mesh.data_size1 * (self.boxsize / self.nmesh)**3} objects per voxel.')
+        self.logger.info(f'Average of {self._mesh.data_size / self.nmesh**3} objects per voxel.')
 
     def W_cat(self, W):
         '''Adds a column to the random catalog with the window function Wij.
@@ -360,7 +366,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         '''
         w = W.lower().replace("w", "")
 
-        if f'W{w}' not in self._randoms.columns:
+        if f'W{w}' not in self._randoms.columns():
             self._randoms[f'W{w}'] = self._randoms['NZ']**(int(w[0])-1) * (self._randoms['WEIGHT'] * self._randoms['WEIGHT_FKP'])**int(w[1])
         return self._randoms[f'W{w}']
 
@@ -429,12 +435,12 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             iik[iik >= self.nmesh // 2] -= self.nmesh
             self._ikgrid.append(iik)
 
-        def get_mesh(weights):
-            toret = self._mesh.clone(data_positions=self.randoms['position'], data_weights=weights, position_type='pos').to_mesh(compensate=True).r2c()
+        def get_mesh(label):
+            toret = self._mesh.clone(data_positions=self.randoms['POSITION'], data_weights=self.randoms[label], position_type='pos').to_mesh(compensate=True).r2c()
             toret *= self.nmesh**3 * self.alpha
             return toret.value
 
-        x = self.randoms['position'].T
+        x = self.randoms['POSITION'].T
 
         with self.tqdm(total=22, desc=f'Computing moments of W{w}') as pbar:
             self.set_cartesian_fft(f'W{w}', get_mesh(f'W{w}'))
@@ -471,9 +477,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         w = label.lower().replace('w', '')
         if w not in self._W:
             # Create object proper for multiprocessing
-            self._W[w] = np.frombuffer(mp.RawArray('d', 2 * self.nmesh.prod()))\
-                           .view(np.complex128)\
-                           .reshape(*self.nmesh)
+            self._W[w] = np.frombuffer(mp.RawArray('d', 2 * int(self.nmesh)**3)).view(np.complex128).reshape(self.nmesh, self.nmesh, self.nmesh)
         self._W[w][:, :, :] = W
 
     def save_cartesian_ffts(self, filename):
@@ -580,14 +584,11 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             global shared_params
             shared_w = {}
             for w, l in zip(args, W_LABELS):
-                shared_w[l] = np.frombuffer(w).view(
-                    np.complex128).reshape(*self.nmesh)
+                shared_w[l] = np.frombuffer(w).view(np.complex128).reshape(self.nmesh, self.nmesh, self.nmesh)
             shared_params = args[-1]
 
-        num_threads = getattr(self, 'num_threads', os.environ.get('OMP_NUM_THREADS', os.cpu_count()))
-
         # Calls the function _compute_window_kernel_row in parallel for each k1 bin
-        with mp.Pool(processes=num_threads, initializer=init_worker, initargs=[*[self._W[w] for w in W_LABELS], init_params]) as pool:
+        with mp.Pool(processes=self.nthreads, initializer=init_worker, initargs=[*[self._W[w] for w in W_LABELS], init_params]) as pool:
             self.WinKernel = np.array(list(self.tqdm(pool.imap(self._compute_window_kernel_row, enumerate(
                 kmodes)), total=len(kmodes), desc="Computing window kernels")))
 

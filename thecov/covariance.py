@@ -5,10 +5,9 @@ to compute the Gaussian covariance matrix of power spectrum multipoles in a give
 
 Example
 -------
->>> import thecov.covariance
->>> import thecov.geometry
->>> geometry = thecov.geometry.SurveyGeometry(random_catalog=randoms, alpha=1/10)
->>> covariance = thecov.covariance.GaussianCovariance(geometry)
+>>> from thecov import BoxGeometry, GaussianCovariance
+>>> geometry = SurveyGeometry(random_catalog=randoms, alpha=1. / 10)
+>>> covariance = GaussianCovariance(geometry)
 >>> covariance.set_kbins(kmin=0, kmax=0.25, dk=0.005)
 >>> covariance.set_pk(P0, 0, has_shotnoise=False)
 >>> covariance.set_pk(P2, 2)
@@ -42,7 +41,7 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
         self.geometry = geometry
 
         self._pk = {}
-
+        self.alphabar = None
         # alphabar is used to scale the shotnoise contributions to the covariance with (1 + alphabar) factors
         if hasattr(geometry, 'alpha'):
             self.alphabar = geometry.alpha
@@ -55,9 +54,9 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
         -------
         float
             Shotnoise value.'''
-
-        return (1 + self.alphabar)*self.geometry.I('12')/self.geometry.I('22')
-        # return self.geometry.shotnoise
+        if self.alphabar is None:
+            return self.geometry.shotnoise
+        return (1 + self.alphabar) * self.geometry.I('12')/self.geometry.I('22')
 
     def set_shotnoise(self, shotnoise):
         '''Set shotnoise to specified value. Also scales alphabar so that (1 + alphabar)*I12/I22
@@ -72,7 +71,7 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
         self.logger.info(f'Estimated shotnoise was {self.geometry.shotnoise}')
         self.logger.info(f'Setting shotnoise to {shotnoise}.')
         # self.geometry.shotnoise = shotnoise
-        self.alphabar = shotnoise*self.geometry.I('22')/self.geometry.I('12') - 1
+        self.alphabar = shotnoise * self.geometry.I('22') / self.geometry.I('12') - 1
         self.logger.info(f'Setting alphabar to {self.alphabar} based on given shotnoise value.')
 
     def set_pk(self, pk, ell, has_shotnoise=False):

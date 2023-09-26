@@ -9,13 +9,6 @@ setup(
     author_email='oalves@umich.edu',
     license='',
     packages=['thecov'],
-    install_requires=['numpy',
-                      'scipy',
-                      'tqdm',
-                      # 'dask',
-                    #   'nbodykit',
-                      ],
-
-    classifiers=[
-    ],
+    install_requires=['numpy', 'scipy', 'tqdm', 'pypower', 'mockfactory'],
+    classifiers=[]
 )
