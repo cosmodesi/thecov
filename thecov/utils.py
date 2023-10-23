@@ -1,5 +1,6 @@
 """This module contains utility functions for the covariance calculation, plotting, etc.
 """
+import os
 
 import numpy as np
 import matplotlib.pyplot as plot
@@ -8,15 +9,24 @@ import collections.abc
 
 __all__ = ['triangle_cov', 'cov2cor', 'plot_cov_array', 'plot_cov', 'plot_cov_diag', 'ridgeplot_cov']
 
+
+def mkdir(dirname):
+    """Try to create ``dirname`` and catch :class:`OSError`."""
+    try:
+        os.makedirs(dirname)  # MPI...
+    except OSError:
+        return
+
+
 def r2c_to_c2c_3d(fourier):
     """Completes a 3D Fourier array generated using PFFT's r2c method with the elements
     that are omitted due to the Hermitian symmetry of the Fourier transform.
-    
+
     Parameters
     ----------
     fourier : array_like
         3D Fourier array generated using PFFT's r2c method.
-        
+
     Returns
     -------
     array_like
@@ -32,7 +42,7 @@ def r2c_to_c2c_3d(fourier):
 
 def triangle_cov(upper, lower, diagonal='upper'):
     '''Construct a covariance matrix from its upper and lower triangular parts.
-    
+
     Parameters
     ----------
     upper : array_like
@@ -42,7 +52,7 @@ def triangle_cov(upper, lower, diagonal='upper'):
     diagonal : str, optional
         Whether the diagonal of the covariance matrix is in the upper or lower triangular part.
         Default is 'upper'.
-        
+
     Returns
     -------
     array_like
@@ -52,11 +62,11 @@ def triangle_cov(upper, lower, diagonal='upper'):
     cov = np.triu(upper) + np.tril(lower)
     cov -= np.diag(np.diag(upper if diagonal == 'lower' else lower))
     return cov
-    
+
 # python's enumerate but with a custom step = 2
 def enum2(xs, start=0, step=2):
     """Enumerate a sequence with a custom step.
-    
+
     Parameters
     ----------
     xs : sequence
@@ -65,7 +75,7 @@ def enum2(xs, start=0, step=2):
         Starting index. Default is 0.
     step : int, optional
         Step of the enumeration. Default is 2.
-    
+
     Returns
     -------
     generator
@@ -77,7 +87,7 @@ def enum2(xs, start=0, step=2):
 
 def sample_from_shell(rmin, rmax, discrete=True):
     """Sample a point uniformly from a spherical shell.
-    
+
     Parameters
     ----------
     rmin : float
@@ -87,38 +97,38 @@ def sample_from_shell(rmin, rmax, discrete=True):
     discrete : bool, optional
         If True, the sampled point will be rounded to the nearest integer.
         Default is True.
-        
+
     Returns
     -------
     x,y,z,r : float
         Coordinates of the sampled point.
     """
-    
+
     r = rmin + (rmax - rmin) * np.random.rand()
     theta = 2 * np.pi * np.random.rand()
     phi = np.arccos(1 - 2 * np.random.rand())
-    
+
     x = r * np.sin(phi) * np.cos(theta)
     y = r * np.sin(phi) * np.sin(theta)
     z = r * np.cos(phi)
-    
+
     if(discrete):
         x,y,z = int(np.round(x)), int(np.round(y)), int(np.round(z))
         r = np.sqrt(x**2 + y**2 + z**2)
         if(r < rmin or r > rmax):
             return sample_from_shell(rmin, rmax, discrete)
-    
+
     return x,y,z,r
 
 def sample_from_cube(rmax, dr, max_modes:int=200):
-    
+
     iL = np.ceil(rmax).astype(int)
 
     ix, iy, iz = np.mgrid[-iL:iL+1,-iL:iL+1,-iL:iL+1]
     ir = np.sqrt(ix**2 + iy**2 + iz**2)
 
     sort = (ir/dr).astype(int)
-    
+
     modes = []
     Nmodes = []
     for i in range(np.ceil(rmax/dr).astype(int)):
@@ -139,27 +149,27 @@ def sample_from_cube(rmax, dr, max_modes:int=200):
 
     return modes, Nmodes
 
-def sample_kmodes(kmax, dk, BoxSize, kmodes_sampled, shell_approx_bin=10):
-    
+def sample_kmodes(kmax, dk, boxsize, kmodes_sampled, shell_approx_bin=10):
+
     # Wavelength where spherical shell approximation kicks in
     k_shell = shell_approx_bin*dk
 
-    kfun = 2*np.pi/BoxSize
+    kfun = 2 * np.pi / boxsize
 
     # Uses full cube from k = 0 to k_shell
-    cube_modes, cube_Nmodes = sample_from_cube(k_shell/kfun, dk/kfun, max_modes=kmodes_sampled)
-    
+    cube_modes, cube_nmodes = sample_from_cube(k_shell / kfun, dk / kfun, max_modes=kmodes_sampled)
+
     # Uses spherical shell approximation from k = k_shell to kmax
     kedges_shell = np.arange(k_shell, kmax + dk, dk)
-    shell_modes = [np.array([sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(
+    shell_modes = [np.array([sample_from_shell(kmin / kfun, kmax / kfun) for _ in range(
                     kmodes_sampled)]) for kmin, kmax in zip(kedges_shell[:-1], kedges_shell[1:])]
-    shell_Nmodes = nmodes(BoxSize**3, kedges_shell[:-1], kedges_shell[1:])
-    
-    return cube_modes + shell_modes, np.array(cube_Nmodes + list(shell_Nmodes))
+    shell_nmodes = nmodes(boxsize**3, kedges_shell[:-1], kedges_shell[1:])
+
+    return cube_modes + shell_modes, np.array(cube_nmodes + list(shell_nmodes))
 
 def nmodes(volume, kmin, kmax):
     '''Compute the number of modes in a given shell.
-    
+
     Parameters
     ----------
     volume : float
@@ -168,22 +178,22 @@ def nmodes(volume, kmin, kmax):
         Minimum k of the shell.
     kmax : float
         Maximum k of the shell.
-        
+
     Returns
     -------
     float
         Number of modes.
     '''
-    return volume/3/(2*np.pi**2) * (kmax**3 - kmin**3)
+    return volume / 3. / (2*np.pi**2) * (kmax**3 - kmin**3)
 
 def cov2cor(covariance):
     '''Compute the correlation matrix from the covariance matrix.
-    
+
     Parameters
     ----------
     covariance : array_like
         Covariance matrix.
-        
+
     Returns
     -------
     array_like
@@ -196,7 +206,7 @@ def cov2cor(covariance):
 
 def plot_cov_array(cova, covb=None, k=None, kmax=None, num_multipoles=3, label_a=None, label_b=None, vmin=-1, vmax=1, num_ticks=5, **kwargs):
     '''Plot the correlation matrix of a covariance matrix in array form.
-    
+
     Parameters
     ----------
     cova : array_like
@@ -241,7 +251,7 @@ def plot_cov_array(cova, covb=None, k=None, kmax=None, num_multipoles=3, label_a
     cmap = LinearSegmentedColormap.from_list("cmap_name", ['#04f', '#fff', '#f30'])
 
     fig, axes = plot.subplots(1, 1, figsize=(12,10), sharey=True, facecolor='white')
-    
+
     if k is None:
         if isinstance(cova, base.FourierBinned):
             k = cova.kmid
@@ -250,19 +260,20 @@ def plot_cov_array(cova, covb=None, k=None, kmax=None, num_multipoles=3, label_a
         else:
             k = np.arange(cova.shape[0])
     else:
+
         axes.set_xlabel(r"k  [h/Mpc]")
         axes.set_ylabel(r"k  [h/Mpc]")
         
     # if k goes from kmin to kmax only once, repeat it num_multipoles for mono/quadru/hexadeca/...pole
     if len(k) == cova.shape[0]//num_multipoles:
         k = np.concatenate(num_multipoles*[k])
-    
+
     if covb is not None:
-        cov = triangle_cov(cova.cor if isinstance(cova, base.Covariance) else cov2cor(cova), 
+        cov = triangle_cov(cova.cor if isinstance(cova, base.Covariance) else cov2cor(cova),
                             covb.cor if isinstance(covb, base.Covariance) else cov2cor(covb))
     else:
         cov = cova.cor if isinstance(cova, base.Covariance) else cov2cor(cova)
-    
+
     if kmax is not None:
         # cut the covariance to kmax
         cov = cov[np.einsum('i,j->ij', k <= kmax, k <= kmax)].reshape(2*[sum(k <= kmax)])
@@ -271,15 +282,15 @@ def plot_cov_array(cova, covb=None, k=None, kmax=None, num_multipoles=3, label_a
     else:
         kbins = len(k)//num_multipoles
         min_k, max_k = min(k), max(k)
-        
+
     i2k_fac = ((max_k - min_k)/kbins)
-    
+
     axes.xaxis.set_major_formatter(plot.FuncFormatter(lambda v,i: f'{(v%kbins)*i2k_fac + min_k:.2f}'))
     axes.yaxis.set_major_formatter(plot.FuncFormatter(lambda v,i: f'{(v%kbins)*i2k_fac + min_k:.2f}'))
 
     axes.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(num_multipoles*num_ticks))
     axes.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(num_multipoles*num_ticks))
-    
+
     for i in range(num_multipoles-1):
         axes.axvline((i+1)*kbins,  color='#888', ls='dashed', lw=1)
         axes.axhline((i+1)*kbins,  color='#888', ls='dashed', lw=1)
@@ -292,7 +303,7 @@ def plot_cov_array(cova, covb=None, k=None, kmax=None, num_multipoles=3, label_a
         axes.text(kbins*0.04, (num_multipoles-0.12)*kbins,  label_a,  fontsize=20)
     if label_b is not None:
         axes.text((num_multipoles - 0.05*(len(label_b) + 1.5))*kbins, 0.04*kbins, label_b, fontsize=20)
-        
+
     # axes.text(10, 3*kbins+20, r'$P_\ell(k)$ correlation matrix.')
 
     colorbar = fig.colorbar(axes.imshow(cov, origin='lower', vmin=vmin, vmax=vmax, cmap=cmap, **kwargs), pad=0.01)
@@ -301,7 +312,7 @@ def plot_cov_array(cova, covb=None, k=None, kmax=None, num_multipoles=3, label_a
 
 def plot_cov(cova, covb=None, kmax=None, label_a=None, label_b=None, vmin=-1, vmax=1, num_ticks=5, **kwargs):
     '''Plot the correlation matrix of a Covariance object.
-    
+
     Parameters
     ----------
     cova : Covariance
@@ -343,20 +354,20 @@ def plot_cov_diag(cov, k=None, label=None, klim=None, colors=['k', 'r', 'g', 'b'
     klim : tuple, optional
         k limits to plot. Default is None.
     colors : list of str, optional
-    
+
     Returns
     -------
     fig, axes1, axes2 : matplotlib figure and axes (for main plot and fractional difference)
     '''
     if not isinstance(cov, collections.abc.Sequence):
         cov = [cov]
-        
+
     if label is None:
         label = len(cov)*['']
-        
+
     if not isinstance(label, collections.abc.Sequence):
         label = [label]
-        
+
 
     if len(cov) == 1:
         if portrait:
@@ -395,9 +406,9 @@ def plot_cov_diag(cov, k=None, label=None, klim=None, colors=['k', 'r', 'g', 'b'
             p2 = c.get_pk(0)**2
             div_by_p2 = True
             break
-    
+
     for (l1, l2), ax1, ax2 in zip([(0,0), (2,2), (4,4), (0,2), (0,4), (2,4)], axes1, axes2):
-        
+
         for c,l,color in zip(cov,label,colors):
 
             a = np.diag(c.get_ell_cov(l1,l2).cov)/p2
@@ -410,14 +421,14 @@ def plot_cov_diag(cov, k=None, label=None, klim=None, colors=['k', 'r', 'g', 'b'
         for c,l,color in zip(cov[1:], label[1:], colors[1:]):
             a = np.diag(c.get_ell_cov(l1,l2).cov)/p2
             b = np.diag(cov[0].get_ell_cov(l1,l2).cov)/p2
-            
+
             ax2.plot(k,  a/b-1, label='frac. diff', c=color)
-            
+
         ax1.set_ylabel(f"$C_{{{l1}{l2}}}(k,k){r'/P_0(k)^2' if div_by_p2 else ''}$")
         ax2.set_xlabel('k [h/Mpc]')
 
         if len(cov) > 1:
-        
+
             ax2.axhline(0, c=colors[0], ls='dashed')
 
             if fracdif_range == None:
@@ -430,13 +441,13 @@ def plot_cov_diag(cov, k=None, label=None, klim=None, colors=['k', 'r', 'g', 'b'
 
         if klim is not None:
             ax2.set_xlim(*klim)
-        
+
         if klim is not None:
             ax1.set_xlim(*klim)
 
     if label != len(label)*['']:
         fig.get_axes()[0].legend()
-        
+
     fig.tight_layout()
     fig.subplots_adjust(hspace=0.4 if len(cov) > 1 else 0.005)
 
@@ -457,7 +468,7 @@ def _get_ridgeplot_line(cov, center, nrange):
 
 def ridgeplot_cov(cov, k=None, step=1, nrange=5, figsize=(5,25), logplot=False, hspace=-0.4):
     '''Plot rows of a covariance matrix as ridgeplots.
-    
+
     Parameters
     ----------
     cov : array_like
@@ -474,16 +485,16 @@ def ridgeplot_cov(cov, k=None, step=1, nrange=5, figsize=(5,25), logplot=False, 
         If True, plot the y axis in log scale. Default is False.
     hspace : float, optional
         Spacing between the rows. Default is -0.4.
-    
+
     Returns
     -------
     fig, axes : matplotlib figure and axes
     '''
     if not isinstance(cov, collections.abc.Sequence):
         cov = [cov]
-    
+
     fig, axes = plot.subplots(cov[0].shape[0]//step, 1, figsize=figsize)
-    
+
     for i,ax in enumerate(axes):
         for c in cov:
             x, y = _get_ridgeplot_line(c.cov, i*step, nrange)
@@ -496,9 +507,9 @@ def ridgeplot_cov(cov, k=None, step=1, nrange=5, figsize=(5,25), logplot=False, 
 
         if k is not None:
             ax.annotate(f'{k[i]:.4f}', xy = (2*nrange + 1, min(y)))
-        
+
         ax.set_xlim((0,2*nrange + 1))
-        
+
         # remove borders, axis ticks, and labels
         ax.axis('off')
 
