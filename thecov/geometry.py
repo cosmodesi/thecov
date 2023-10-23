@@ -310,6 +310,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         if self.nthreads is None:
             self.nthreads = int(os.environ.get('OMP_NUM_THREADS', os.cpu_count()))
 
+        self.logger.debug(f'{self.nthreads} threads available.')
+
         self.tqdm = tqdm
 
         self._W = {}
@@ -591,7 +593,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             shared_params = args[-1]
 
         # Calls the function _compute_window_kernel_row in parallel for each k1 bin
-        with mp.Pool(processes=self.nthreads, initializer=init_worker, initargs=[*[self._W[w] for w in W_LABELS], init_params]) as pool:
+        with mp.Pool(processes=min(self.nthreads, len(kmodes)), initializer=init_worker, initargs=[*[self._W[w] for w in W_LABELS], init_params]) as pool:
             self.WinKernel = np.array(list(self.tqdm(pool.imap(self._compute_window_kernel_row, enumerate(
                 kmodes)), total=len(kmodes), desc="Computing window kernels")))
 
