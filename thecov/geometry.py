@@ -10,18 +10,19 @@ SurveyGeometry
     Class that represents the geometry of a survey in cut-sky.
 """
 
+import os
 from abc import ABC
 import itertools as itt
-
 import multiprocessing as mp
-import os
+import logging
+import warnings
 
 import numpy as np
 from scipy import fft
-import dask.array as da
 
 from tqdm import tqdm as shell_tqdm
 
+import os
 from . import base, utils
 
 __all__ = ['BoxGeometry', 'SurveyGeometry']
@@ -34,9 +35,10 @@ W_LABELS = ['12', '12xx', '12xy', '12xz', '12yy', '12yz', '12zz', '12xxxx', '12x
 class Geometry(ABC):
 
     def save_attributes(self, filename, attrs):
+        utils.mkdir(os.path.dirname(filename))
         np.savez(filename if filename.strip()
                  [-4:] == '.npz' else f'{filename}.npz', **{a: getattr(self, a) for a in attrs})
-        
+
     def load_attributes(self, filename, attrs=None):
         with np.load(filename, mmap_mode='r') as data:
             if attrs is None:
@@ -48,16 +50,16 @@ class Geometry(ABC):
 
 class BoxGeometry(Geometry):
     '''Class that represents the geometry of a periodic cubic box.
-    
+
     Attributes
     ----------
-    BoxSize : float
+    boxsize : float
         Size of the box.
-    Nmesh : int
+    nmesh : int
         Number of mesh points in each dimension.
     alpha : float
         Factor to multiply the number of galaxies in the box.
-    
+
     Methods
     -------
     set_boxsize
@@ -67,6 +69,8 @@ class BoxGeometry(Geometry):
     set_alpha
         Set the factor to multiply the number of galaxies in the box.
     '''
+    logger = logging.getLogger('BoxGeometry')
+
     def __init__(self, volume=None, nbar=None):
         self._volume = volume
         self._nbar = nbar
@@ -93,22 +97,22 @@ class BoxGeometry(Geometry):
     @property
     def shotnoise(self):
         '''Estimates the Poissonian shotnoise of the sample as 1/nbar.
-        
+
         Returns
         -------
         float
             Poissonian shotnoise of the sample = 1/nbar.'''
-        return 1/self.nbar
+        return 1. / self.nbar
 
     @shotnoise.setter
     def shotnoise(self, shotnoise):
         '''Sets the Poissonian shotnoise of the sample and nbar = 1/shotnoise.
-        
+
         Parameters
         ----------
         shotnoise : float
             Shotnoise of the sample.'''
-        self.nbar = 1./shotnoise
+        self.nbar = 1. / shotnoise
 
     @property
     def zedges(self):
@@ -128,12 +132,12 @@ class BoxGeometry(Geometry):
 
     @property
     def zavg(self):
-        bin_volume = np.diff(self.cosmo.comoving_distance(self.zedges)**3)
+        bin_volume = np.diff(self.cosmo.comoving_radial_distance(self.zedges)**3)
         return np.average(self.zmid, weights=self.nz * bin_volume)
 
     def set_effective_volume(self, zmin, zmax, fsky=None):
         '''Set the effective volume of the box.
-        
+
         Parameters
         ----------
         zmin : float
@@ -142,7 +146,7 @@ class BoxGeometry(Geometry):
             Maximum redshift of the sample.
         fsky : float, optional
             Fraction of the sky covered by the sample. If not given, the current value of fsky is used.
-            
+
         Returns
         -------
         float
@@ -154,9 +158,9 @@ class BoxGeometry(Geometry):
         self._zmin = zmin
         self._zmax = zmax
 
-        self.volume = self.fsky * 4/3 * np.pi * \
-            (self.cosmo.comoving_distance(zmax)**3 -
-             self.cosmo.comoving_distance(zmin)**3)
+        self.volume = self.fsky * 4. / 3. * np.pi * \
+            (self.cosmo.comoving_radial_distance(zmax)**3 -
+             self.cosmo.comoving_radial_distance(zmin)**3)
 
         return self.volume
 
@@ -182,17 +186,17 @@ class BoxGeometry(Geometry):
 
         self.set_effective_volume(
             zmin=self.zmin, zmax=self.zmax, *args, **kwargs)
-        print(f'Effective volume: {self.volume:.3e} (Mpc/h)^3')
+        self.logger.info(f'Effective volume: {self.volume:.3e} (Mpc/h)^3')
 
         bin_volume = self.fsky * \
-            np.diff(self.cosmo.comoving_distance(self.zedges)**3)
+            np.diff(self.cosmo.comoving_radial_distance(self.zedges)**3)
         self.nbar = np.average(self.nz, weights=bin_volume)
-        print(f'Estimated nbar: {self.nbar:.3e} (Mpc/h)^-3')
+        self.logger.info(f'Estimated nbar: {self.nbar:.3e} (Mpc/h)^-3')
 
-    def set_randoms(self, randoms, alpha=1.0, fsky=None):
+    def set_randoms(self, randoms, alpha=1.0, bins=None, fsky=None):
         '''Estimates the effective volume and number density of the box based on a
         provided catalog of randoms.
-        
+
         Parameters
         ----------
         randoms : array_like
@@ -200,8 +204,7 @@ class BoxGeometry(Geometry):
         alpha : float, optional
             Factor to multiply the number density of the randoms. Default is 1.0.
         '''
-        
-        from nbodykit.algorithms import zhist
+        from mockfactory import RedshiftDensityInterpolator
 
         if fsky is None:
             import healpy as hp
@@ -209,15 +212,14 @@ class BoxGeometry(Geometry):
             nside = 512
             hpixel = hp.ang2pix(nside, randoms['RA'], randoms['DEC'], lonlat=True)
             unique_hpixels = np.unique(hpixel)
-            self.fsky = len(unique_hpixels.compute())/hp.nside2npix(nside)
+            self.fsky = len(unique_hpixels) / hp.nside2npix(nside)
 
-            print(f'fsky estimated from randoms: {self.fsky:.3f}')
+            self.logger.info(f'fsky estimated from randoms: {self.fsky:.3f}')
         else:
             self.fsky = fsky
 
-        nz_hist = zhist.RedshiftHistogram(
-            randoms, self.fsky, self.cosmo, redshift='Z')
-        self.set_nz(zedges=nz_hist.bin_edges, nz=nz_hist.nbar*alpha)
+        nz_hist = RedshiftDensityInterpolator(z=randoms['Z'], bins=bins, fsky=self.fsky, distance=self.cosmo.comoving_radial_distance)
+        self.set_nz(zedges=nz_hist.edges, nz=nz_hist.nbar * alpha)
 
     @property
     def area(self):
@@ -238,9 +240,9 @@ class BoxGeometry(Geometry):
     @property
     def cosmo(self):
         if not hasattr(self, '_cosmo'):
-            print('Cosmology object not set. Using default cosmology.')
-            from nbodykit.lab import cosmology
-            self._cosmo = cosmology.Cosmology(h=0.7).match(Omega0_m=0.31)
+            self.logger.info('Cosmology object not set. Using fiducial cosmology DESI.')
+            from cosmoprimo.fiducial import DESI
+            self._cosmo = DESI()
         return self._cosmo
 
     @cosmo.setter
@@ -250,26 +252,30 @@ class BoxGeometry(Geometry):
 
 class SurveyGeometry(Geometry, base.FourierBinned):
     '''Class that represents the geometry of a survey in cut-sky.
-    
+
+    Warning
+    -------
+    Does not run with MPI.
+
     Attributes
     ----------
-    random_catalog : nbodykit.catalog.CatalogSource
-        Catalog of randoms.
-    Nmesh : int
+    randoms : Catalog
+        Catalog of randoms, with (at least) column 'POSITION'. (Optionally: WEIGHT, WEIGHT_FKP, NZ).
+    nmesh : int
         Number of mesh points in each dimension to be used in the calculation of the FFTs.
-    BoxSize : float
+    boxsize : float
         Size of the box.
-    alpha : float
-        Factor to multiply the number density of the randoms. Default is 1.0.
+    boxpad : float
+        Box padding.
     delta_k_max : int
         Number of k bins to be calculated each side of the diagonal.
     kmodes_sampled : int
         Number of k modes to be sampled in the calculation of the window kernels.
-    mesh_kwargs : dict
-        Arguments to be passed to nbodykit.mesh.MeshSource.to_mesh.
+    alpha : float
+        Factor to multiply the number density of the randoms. Default is 1.0.
     tqdm : callable
         Function to be used for progress bar. Default is tqdm from tqdm package.
-    
+
     Methods
     -------
     set_kbins(kmin, kmax, dk)
@@ -280,20 +286,19 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         Save the window kernels to a file.
     load_window_kernels(filename)
         Load the window kernels from a file.
-    
+
     Notes
     -----
     The window kernels are computed using the method described in [1]_.
-    
+
     References
     ----------
     .. [1] https://arxiv.org/abs/1910.02914
     '''
+    logger = logging.getLogger('SurveyGeometry')
 
-    def __init__(self, random_catalog=None, Nmesh=None, BoxSize=None, boxsize_factor = 2.0, kmax_mask=0.05, delta_k_max=3, kmodes_sampled=400, alpha=1.0, mesh_kwargs=None, tqdm=shell_tqdm):
+    def __init__(self, randoms, nmesh=None, cellsize=None, boxsize=None, boxpad=2.0, kmax_mask=0.05, delta_k_max=3, kmodes_sampled=400, alpha=1.0, nthreads=None, tqdm=shell_tqdm, **kwargs):
 
-        assert Nmesh is None or Nmesh % 2 == 1, 'Please, use an odd integer for Nmesh.'
-        
         base.FourierBinned.__init__(self)
 
         self.alpha = alpha
@@ -301,77 +306,65 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self.kmodes_sampled = kmodes_sampled
 
         self._shotnoise = None
+        self.nthreads = nthreads
+        if self.nthreads is None:
+            self.nthreads = int(os.environ.get('OMP_NUM_THREADS', os.cpu_count()))
+
+        self.logger.debug(f'{self.nthreads} threads available.')
 
         self.tqdm = tqdm
 
         self._W = {}
         self._I = {}
 
-        if random_catalog is not None:
-            self._randoms = random_catalog
+        from mockfactory import Catalog
+        from pypower import CatalogMesh
+        self._randoms = Catalog(randoms)
+        self._ngals = self.randoms.size * self.alpha  # not used
+        for name in ['WEIGHT', 'WEIGHT_FKP']:
+            if name not in self._randoms: self._randoms[name] = np.ones(self._randoms.size, dtype='f8')
+        if 'NZ' not in self._randoms:
+            warnings.warn('NZ column not found in randoms. Estimating it with RedshiftDensityInterpolator.')
+            from mockfactory import RedshiftDensityInterpolator
+            import healpy as hp
+            nside = 512
+            distance = np.sqrt(np.sum(randoms['POSITION']**2, axis=-1))
+            xyz = randoms['POSITION'] / distance[:, None]
+            hpixel = hp.vec2pix(nside, *xyz.T)
+            unique_hpixels = np.unique(hpixel)
+            fsky = len(unique_hpixels) / hp.nside2npix(nside)
+            self.logger.info(f'fsky estimated from randoms: {fsky:.3f}')
+            nbar = RedshiftDensityInterpolator(z=distance, fsky=fsky)
+            self._randoms['NZ'] = self.alpha * nbar(distance)
+        if nmesh is None and cellsize is None:
+            # Pick value that will give at least k_mask = kmax_mask in the FFTs
+            cellsize = np.pi / kmax_mask / (1. + 1e-9)
 
-            self._ngals = self.randoms.size * self.alpha
+        self._mesh = CatalogMesh(data_positions=self._randoms['POSITION'], data_weights=self._randoms['WEIGHT'],
+                                 position_type='pos', nmesh=nmesh, cellsize=cellsize, boxsize=boxsize, boxpad=boxpad, dtype='c16',
+                                 **{'interlacing': 3, 'resampler': 'tsc', **kwargs})
+        self.logger.info(f'Using box size {self._mesh.boxsize}, box center {self._mesh.boxcenter} and nmesh {self._mesh.nmesh}.')
+        self.boxsize = self._mesh.boxsize[0]
+        self.nmesh = self._mesh.nmesh[0]
+        assert np.allclose(self._mesh.boxsize, self.boxsize) and np.all(self._mesh.nmesh == self.nmesh)
 
-            pos_max = da.max(random_catalog['Position'], axis=0).compute()
-            pos_min = da.min(random_catalog['Position'], axis=0).compute()
+        knyquist = np.pi * self.nmesh / self.boxsize
+        self.logger.info(f'Nyquist wavelength of window FFTs = {knyquist}.')
 
-            print(f'Randoms xyz range =  {pos_min} to {pos_max}.')
-            print(f'They fit inside a box of size {pos_max - pos_min}.')
+        if knyquist < kmax_mask:
+            warnings.warn(f'Nyquist frequency {knyquist} smaller than required kmax_mask = {kmax_mask}.')
 
-            survey_center = (pos_max + pos_min)/2
-            print(f'Survey center is at xyz = {survey_center}.')
-        else:
-            self._ngals = None
+        self.logger.info(f'Average of {self._mesh.data_size / self.nmesh**3} objects per voxel.')
 
-        if BoxSize is None and random_catalog is not None:
-            # Estimate BoxSize from random catalog
-            self.BoxSize = max(pos_max - pos_min)*boxsize_factor
-            print(f'Using BoxSize = {self.BoxSize}.')
-        elif np.ndim(BoxSize) == 0:
-            self.BoxSize = BoxSize
-        elif np.ndim(BoxSize) == 1:
-            self.BoxSize = max(BoxSize)
-
-        if random_catalog is not None:
-            self._randoms['RelativePosition'] = self._randoms['Position'] - survey_center
-            self._randoms['BoxPosition'] = self._randoms['RelativePosition'] + self.BoxSize/2
-
-        if Nmesh is None:
-            # Pick odd value that will give at least k_mask = kmax_mask in the FFTs
-            self.Nmesh = int(np.ceil(kmax_mask*self.BoxSize/np.pi))
-            print(f'Using Nmesh = {self.Nmesh} for the window FFTs.')
-        else:
-            self.Nmesh = Nmesh
-
-        k_nyquist = np.pi*self.Nmesh/self.BoxSize
-        print(f'Nyquist wavelength of window FFTs = {k_nyquist}.')
-
-        if k_nyquist < kmax_mask:
-            print(f'WARNING: Nyquist frequency smaller than required kmax_mask = {kmax_mask}.')
-
-        self._mesh_kwargs = {
-            'Nmesh':       self.Nmesh,
-            'BoxSize':     self.BoxSize,
-            'interlaced':  True,
-            'compensated': True,
-            'resampler':   'tsc',
-            'position': 'BoxPosition',
-            'weight': 'WEIGHT',
-        }
-
-        if mesh_kwargs is not None:
-            self._mesh_kwargs.update(mesh_kwargs)
-
-        print(f'Average of {self.nbar/self.alpha*(self.BoxSize/self.Nmesh)**3} objects per voxel.')
 
     def W_cat(self, W):
         '''Adds a column to the random catalog with the window function Wij.
-        
+
         Parameters
         ----------
         W : str
             Window function label.
-        
+
         Returns
         -------
         array_like
@@ -379,19 +372,20 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         '''
         w = W.lower().replace("w", "")
 
-        if f'W{w}' not in self._randoms.columns:
+        if f'W{w}' not in self._randoms.columns():
             self._randoms[f'W{w}'] = self._randoms['NZ']**(
-                int(w[0])-1) * self._randoms['WEIGHT_FKP']**int(w[1])
+                int(w[0])-1) * self._randoms['WEIGHT_FKP']**int(w[1])*self._randoms[f'WEIGHT']
+
         return self._randoms[f'W{w}']
 
     def I(self, W):
         '''Computes the integral Iij of the window function Wij.
-        
+
         Parameters
         ----------
         W : str
             Window function label.
-            
+
         Returns
         -------
         float
@@ -400,17 +394,18 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         w = W.lower().replace("i", "").replace("w", "")
         if w not in self._I:
             self.W_cat(w)
-            self._I[w] = ((self._randoms[f'W{w}']*self._randoms[f'WEIGHT']).sum() * self.alpha).compute()
+            self._I[w] = self._randoms[f'W{w}'].sum() * self.alpha
+
         return self._I[w]
 
     def W(self, W):
         '''Returns FFT of the window function Wij. If it has not been computed yet, it is computed.
-        
+
         Parameters
         ----------
         W : str
             Window function label.
-        
+
         Returns
         -------
         array_like
@@ -419,13 +414,12 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         w = W.lower().replace("w", "")
         if w not in self._W:
             self.W_cat(w)
-            self.compute_cartesian_fft(
-                w.replace("x", "").replace("y", "").replace("z", ""))
+            self.compute_cartesian_fft(w.replace("x", "").replace("y", "").replace("z", ""))
         return self._W[w]
 
     def compute_cartesian_ffts(self, Wij=('W12', 'W22')):
         '''Computes the FFTs of the window functions Wij.
-        
+
         Parameters
         ----------
         Wij : array_like, optional
@@ -435,73 +429,53 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
     def compute_cartesian_fft(self, W):
         '''Computes the FFT of the window function Wij.
-        
+
         Parameters
         ----------
         W : str
             Window function label.
         '''
         w = W.lower().replace('w', '')
-
         self.W_cat(w)
 
-        mesh_kwargs = self._mesh_kwargs
-        
-        x = self.randoms['RelativePosition'].T
-        
+        self._ikgrid = []
+        for i in range(3):
+            iik = np.arange(self.nmesh)
+            iik[iik >= self.nmesh // 2] -= self.nmesh
+            self._ikgrid.append(iik)
+
+        def get_mesh(label):
+            toret = self._mesh.clone(data_positions=self.randoms['POSITION'], data_weights=self.randoms[label], position_type='pos').to_mesh(compensate=True).r2c()
+            toret *= self.nmesh**3 * self.alpha
+            return toret.value
+
+        x = self.randoms['POSITION'].T
 
         with self.tqdm(total=22, desc=f'Computing moments of W{w}') as pbar:
-            self.set_cartesian_fft(f'W{w}', self._format_fft(self.randoms.to_mesh(
-                value=f'W{w}',**mesh_kwargs).paint(mode='complex')))
-            
-            # Check if zero mode of FFT Wij is consistent with integral Iij
-            center = self.Nmesh//2
-            if self.Nmesh % 2 == 0:
-                center -= 1
-            Ww = self.W(w)[center, center, center]
-            Iw = self.I(w)
-
-            if not np.isclose(Ww.real, Iw, rtol=1e-2) and np.isclose(Ww.imag, 0, rtol=1e-2):
-                print(f'WARNING: Inconsistency between W{w}_0 = {Ww} and I{w} = {Iw}.')
-            
-
+            self.set_cartesian_fft(f'W{w}', get_mesh(f'W{w}'))
+            self.W(w)
+            self.I(w)
             pbar.update(1)
 
             for (i, i_label), (j, j_label) in itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=2):
                 label = f'W{w}{i_label}{j_label}'
                 self.randoms[label] = self.randoms[f'W{w}'] * \
-                    x[i]*x[j] / (x[0]**2 + x[1]**2 + x[2]**2)
-                self.set_cartesian_fft(label, self._format_fft(self.randoms.to_mesh(
-                    value=label, **mesh_kwargs).paint(mode='complex')))
+                    x[i] * x[j] / (x[0]**2 + x[1]**2 + x[2]**2)
+                self.set_cartesian_fft(label, get_mesh(label))
 
                 pbar.update(1)
 
             for (i, i_label), (j, j_label), (k, k_label), (l, l_label) in itt.combinations_with_replacement(enumerate(['x', 'y', 'z']), r=4):
                 label = f'W{w}{i_label}{j_label}{k_label}{l_label}'
                 self.randoms[label] = self.randoms[f'W{w}'] * x[i] * \
-                    x[j]*x[k]*x[l] / (x[0]**2 + x[1]**2 + x[2]**2)**2
-                self.set_cartesian_fft(label, self._format_fft(self.randoms.to_mesh(
-                    value=label, **mesh_kwargs).paint(mode='complex')))
+                    x[j] * x[k] * x[l] / (x[0]**2 + x[1]**2 + x[2]**2)**2
+                self.set_cartesian_fft(label, get_mesh(label))
 
                 pbar.update(1)
 
-    def _format_fft(self, fourier):
-
-        # PFFT omits modes that are determined by the Hermitian condition. Adding them:
-        fourier_full = utils.r2c_to_c2c_3d(fourier)
-
-        return fft.fftshift(fourier_full) * self.ngals
-
-    def _unformat_fft(self, fourier, window):
-
-        fourier_cut = fft.ifftshift(
-            fourier)[:, :, :fourier.shape[2]//2+1] / self.ngals
-
-        return np.conj(fourier_cut) if window == '12' else fourier_cut
-
     def set_cartesian_fft(self, label, W):
         '''Set the FFT of the window function Wij.
-        
+
         Parameters
         ----------
         label : str
@@ -512,25 +486,24 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         w = label.lower().replace('w', '')
         if w not in self._W:
             # Create object proper for multiprocessing
-            self._W[w] = np.frombuffer(mp.RawArray('d', 2*self.Nmesh**3))\
-                           .view(np.complex128)\
-                           .reshape(*3*[self.Nmesh])
+            self._W[w] = np.frombuffer(mp.RawArray('d', 2 * int(self.nmesh)**3)).view(np.complex128).reshape(self.nmesh, self.nmesh, self.nmesh)
         self._W[w][:, :, :] = W
 
     def save_cartesian_ffts(self, filename):
         '''Save the FFTs of the window functions Wij to a file.
-        
+
         Parameters
         ----------
         filename : str
             Name of the file to save the FFTs of the window functions Wij.
         '''
-        np.savez(filename if filename.strip()[-4:] == '.npz' else f'{filename}.npz', **{f'W{k.replace("W","")}': self._W[k] for k in self._W}, **{
-                 f'I{k.replace("I","")}': self._I[k] for k in self._I}, BoxSize=self.BoxSize, Nmesh=self.Nmesh, alpha=self.alpha)
+        utils.mkdir(os.path.dirname(filename))
+        np.savez(filename if filename.endswith('.npz') else f'{filename}.npz', **{f'W{k.replace("W", "")}': self._W[k] for k in self._W}, **{
+                 f'I{k.replace("I", "")}': self._I[k] for k in self._I}, **{name: getattr(self, name) for name in ['boxsize', 'nmesh', 'alpha']})
 
     def load_cartesian_ffts(self, filename):
         '''Load the FFTs of the window functions Wij from a file.
-        
+
         Parameters
         ----------
         filename : str
@@ -538,23 +511,14 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         '''
         with np.load(filename, mmap_mode='r') as data:
 
-            self.BoxSize = data['BoxSize']
-            self.Nmesh = data['Nmesh']
-            self.alpha = data['alpha']
+            for name in ['boxsize', 'nmesh', 'alpha']:
+                setattr(self, name, data[name])
 
             for f in data.files:
                 if f[0] == 'W':
                     self.set_cartesian_fft(f, data[f])
                 elif f[0] == 'I':
                     self._I[f[1:]] = data[f]
-
-            self._mesh_kwargs = {
-                'Nmesh':       self.Nmesh,
-                'BoxSize':     self.BoxSize,
-                'interlaced':  True,
-                'compensated': True,
-                'resampler':   'tsc',
-            }
 
     @property
     def randoms(self):
@@ -563,7 +527,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     @property
     def ngals(self):
         return self._ngals
-    
+
     @ngals.setter
     def ngals(self, ngals):
         self._ngals = ngals
@@ -574,7 +538,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
     def get_window_kernels(self):
         '''Returns the window kernels to be used in the calculation of the covariance.
-        
+
         Returns
         -------
         array_like
@@ -586,25 +550,25 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
     def compute_window_kernels(self):
         '''Computes the window kernels to be used in the calculation of the covariance.
-        
+
         Notes
         -----
         The window kernels are computed using the method described in [1]_.
-        
+
         References
         ----------
         .. [1] https://arxiv.org/abs/1910.02914
         '''
 
-        kfun = 2*np.pi/self.BoxSize
+        kfun = 2 * np.pi / self.boxsize
 
         kmodes = np.array([[utils.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(
-            self.kmodes_sampled)] for kmin, kmax in zip(self.kedges[:-1], self.kedges[1:])])
+                           self.kmodes_sampled)] for kmin, kmax in zip(self.kedges[:-1], self.kedges[1:])])
 
-        Nmodes = utils.nmodes(self.BoxSize**3, self.kedges[:-1], self.kedges[1:])
+        Nmodes = utils.nmodes(self.boxsize**3, self.kedges[:-1], self.kedges[1:])
 
-        # sample kmodes from each k1 bin        
-        # kmodes, Nmodes = utils.sample_kmodes(self.kmax, self.dk, self.BoxSize, self.kmodes_sampled)
+        # sample kmodes from each k1 bin
+        # kmodes, Nmodes = utils.sample_kmodes(self.kmax, self.dk, self.boxsize, self.kmodes_sampled)
 
         # kmodes, Nmodes = utils.sample_from_cube(self.kmax/kfun, self.dk/kfun, self.kmodes_sampled)
 
@@ -616,12 +580,13 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         init_params = {
             'I22': self.I('22'),
-            'BoxSize': self.BoxSize,
+            'boxsize': self.boxsize,
             'kbins': self.kbins,
             'dk': self.dk,
-            'Nmesh': self.Nmesh,
+            'nmesh': self.nmesh,
+            'ikgrid': self._ikgrid,
             'delta_k_max': self.delta_k_max,
-            'Nmodes': Nmodes,
+            'nmodes': Nmodes,
         }
 
         def init_worker(*args):
@@ -629,19 +594,11 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             global shared_params
             shared_w = {}
             for w, l in zip(args, W_LABELS):
-                shared_w[l] = np.frombuffer(w).view(
-                    np.complex128).reshape(*3*[self.Nmesh])
+                shared_w[l] = np.frombuffer(w).view(np.complex128).reshape(self.nmesh, self.nmesh, self.nmesh)
             shared_params = args[-1]
 
-        if hasattr(self, 'num_threads'):
-            num_threads = self.num_threads
-        elif 'OMP_NUM_THREADS' in os.environ:
-            num_threads = os.environ['OMP_NUM_THREADS']
-        else:
-            num_threads = os.cpu_count()
-
         # Calls the function _compute_window_kernel_row in parallel for each k1 bin
-        with mp.Pool(processes=num_threads, initializer=init_worker, initargs=[*[self._W[w] for w in W_LABELS], init_params]) as pool:
+        with mp.Pool(processes=min(self.nthreads, len(kmodes)), initializer=init_worker, initargs=[*[self._W[w] for w in W_LABELS], init_params]) as pool:
             self.WinKernel = np.array(list(self.tqdm(pool.imap(self._compute_window_kernel_row, enumerate(
                 kmodes)), total=len(kmodes), desc="Computing window kernels")))
 
@@ -651,7 +608,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
     def save_window_kernels(self, filename):
         '''Save the window kernels to a file.
-        
+
         Parameters
         ----------
         filename : str
@@ -661,8 +618,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                                        'kmodes_sampled',
                                        'shotnoise',
                                        'ngals',
-                                       'BoxSize',
-                                       'Nmesh',
+                                       'boxsize',
+                                       'nmesh',
                                        'dk',
                                        'kmax',
                                        'kmin',
@@ -670,7 +627,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
     def load_window_kernels(self, filename):
         '''Load the window kernels from a file.
-        
+
         Parameters
         ----------
         filename : str
@@ -681,13 +638,13 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     @classmethod
     def from_window_kernels_file(cls, filename):
         '''Create geometry object from window kernels file.
-        
+
         Parameters
         ----------
         filename : str
             Name of the file to load the window kernels from.
         '''
-        geometry = cls()
+        geometry = cls.__new__(cls)
         geometry.load_window_kernels(filename)
         return geometry
 
@@ -705,22 +662,17 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         #    The last dim corresponds to multipoles: [L0xL0,L2xL2,L4xL4,L2xL0,L4xL0,L4xL2]
 
-        k1_bin_index, Bin_kmodes = args
-
+        k1_bin_index, bin_kmodes = args
         I22 = shared_params['I22']
-
-        BoxSize = shared_params['BoxSize']
-        kfun = 2*np.pi/BoxSize,
-
-        nBins = shared_params['kbins']
-        kBinWidth = shared_params['dk']
-
-        Nmesh = shared_params['Nmesh']
+        boxsize = shared_params['boxsize']
+        kfun = 2 * np.pi / boxsize
+        nbins = shared_params['kbins']
+        dk = shared_params['dk']
 
         W = shared_w
 
-        # Bin_ModeNum = utils.nmodes(BoxSize**3, kedges[:-1], kedges[1:])
-        Bin_ModeNum = shared_params['Nmodes']
+        # nmodes = utils.nmodes(boxsize**3, kedges[:-1], kedges[1:])
+        nmodes = shared_params['nmodes']
 
         # The Gaussian covariance drops quickly away from diagonal.
         # Only delta_k_max points to each side of the diagonal are calculated.
@@ -733,17 +685,15 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         avgW40 = avgW00.copy()
         avgW42 = avgW00.copy()
 
-        iix, iiy, iiz = np.mgrid[-Nmesh//2+1:Nmesh//2+1,
-                                 -Nmesh//2+1:Nmesh//2+1,
-                                 -Nmesh//2+1:Nmesh//2+1]
+        iix, iiy, iiz = np.meshgrid(*shared_params['ikgrid'], indexing='ij')
 
         k2xh = np.zeros_like(iix)
         k2yh = np.zeros_like(iiy)
         k2zh = np.zeros_like(iiz)
 
-        kmodes_sampled = len(Bin_kmodes)
+        kmodes_sampled = len(bin_kmodes)
 
-        for ik1x, ik1y, ik1z, ik1r in Bin_kmodes:
+        for ik1x, ik1y, ik1z, ik1r in bin_kmodes:
 
             if ik1r <= 1e-10:
                 k1xh = 0
@@ -762,7 +712,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             k2r = np.sqrt(k2xh**2 + k2yh**2 + k2zh**2)
 
             # to decide later which shell the k2 mode belongs to
-            k2_bin_index = (k2r*kfun/kBinWidth).astype(int)
+            k2_bin_index = (k2r * kfun / dk).astype(int)
 
             k2r[k2r <= 1e-10] = np.inf
 
@@ -1002,9 +952,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                             + W_k2L4*W12_k1L4_k2L2 + (2/7.*W_k1L4_k2L2 + 20/77.*W_k1L4_k2L4)*W12c_L0),
 
                        np.conj(W12_k1L4_k2L2)*W12c_L0+np.conj(W12_k1L4)*W12_k2L2]  # 1/(nbar)^2
-            
+
             for delta_k in range(-delta_k_max, delta_k_max + 1):
-                # k2_bin_index has shape (Nmesh, Nmesh, Nmesh)
+                # k2_bin_index has shape (nmesh, nmesh, nmesh)
                 # k1_bin_index is a scalar
                 modes = (k2_bin_index - k1_bin_index == delta_k)
 
@@ -1018,7 +968,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                     avgW42[delta_k + delta_k_max, term] += np.sum(C42exp[term][modes])
 
         for i in range(0, 2*delta_k_max + 1):
-            if (i + k1_bin_index - delta_k_max >= nBins or i + k1_bin_index - delta_k_max < 0):
+            if (i + k1_bin_index - delta_k_max >= nbins or i + k1_bin_index - delta_k_max < 0):
                 avgW00[i] = 0
                 avgW22[i] = 0
                 avgW44[i] = 0
@@ -1026,15 +976,15 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                 avgW40[i] = 0
                 avgW42[i] = 0
             else:
-                avgW00[i] /= kmodes_sampled*Bin_ModeNum[k1_bin_index + i - delta_k_max]*I22**2
-                avgW22[i] /= kmodes_sampled*Bin_ModeNum[k1_bin_index + i - delta_k_max]*I22**2
-                avgW44[i] /= kmodes_sampled*Bin_ModeNum[k1_bin_index + i - delta_k_max]*I22**2
-                avgW20[i] /= kmodes_sampled*Bin_ModeNum[k1_bin_index + i - delta_k_max]*I22**2
-                avgW40[i] /= kmodes_sampled*Bin_ModeNum[k1_bin_index + i - delta_k_max]*I22**2
-                avgW42[i] /= kmodes_sampled*Bin_ModeNum[k1_bin_index + i - delta_k_max]*I22**2
+                avgW00[i] /= kmodes_sampled*nmodes[k1_bin_index + i - delta_k_max]*I22**2
+                avgW22[i] /= kmodes_sampled*nmodes[k1_bin_index + i - delta_k_max]*I22**2
+                avgW44[i] /= kmodes_sampled*nmodes[k1_bin_index + i - delta_k_max]*I22**2
+                avgW20[i] /= kmodes_sampled*nmodes[k1_bin_index + i - delta_k_max]*I22**2
+                avgW40[i] /= kmodes_sampled*nmodes[k1_bin_index + i - delta_k_max]*I22**2
+                avgW42[i] /= kmodes_sampled*nmodes[k1_bin_index + i - delta_k_max]*I22**2
 
-        def l_factor(l1, l2): return (2*l1 + 1) * \
-            (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
+        def l_factor(l1, l2):
+            return (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
 
         avgWij = np.zeros((2*delta_k_max+1, 15, 6))
 
@@ -1051,8 +1001,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     def shotnoise(self):
         if self._shotnoise is None:
             return (1 + self.alpha)*self.I('12')/self.I('22')
-        else:
-            return self._shotnoise
+        return self._shotnoise
 
     @shotnoise.setter
     def shotnoise(self, shotnoise):
@@ -1060,8 +1009,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
     @property
     def nbar(self):
-        return 1/self.shotnoise
+        return 1 / self.shotnoise
 
     @nbar.setter
     def nbar(self, nbar):
-        self.shotnoise = 1/nbar
+        self.shotnoise = 1 / nbar
