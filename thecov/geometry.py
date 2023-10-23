@@ -324,6 +324,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         for name in ['WEIGHT', 'WEIGHT_FKP']:
             if name not in self._randoms: self._randoms[name] = np.ones(self._randoms.size, dtype='f8')
         if 'NZ' not in self._randoms:
+            warnings.warn('NZ column not found in randoms. Estimating it with RedshiftDensityInterpolator.')
             from mockfactory import RedshiftDensityInterpolator
             import healpy as hp
             nside = 512
@@ -355,6 +356,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         self.logger.info(f'Average of {self._mesh.data_size / self.nmesh**3} objects per voxel.')
 
+
     def W_cat(self, W):
         '''Adds a column to the random catalog with the window function Wij.
 
@@ -370,8 +372,10 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         '''
         w = W.lower().replace("w", "")
 
-        if f'W{w}' not in self._randoms.columns():
-            self._randoms[f'W{w}'] = self._randoms['NZ']**(int(w[0])-1) * (self._randoms['WEIGHT'] * self._randoms['WEIGHT_FKP'])**int(w[1])
+        if f'W{w}' not in self._randoms.columns:
+            self._randoms[f'W{w}'] = self._randoms['NZ']**(
+                int(w[0])-1) * self._randoms['WEIGHT_FKP']**int(w[1])*self._randoms[f'WEIGHT']
+
         return self._randoms[f'W{w}']
 
     def I(self, W):
@@ -391,6 +395,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         if w not in self._I:
             self.W_cat(w)
             self._I[w] = self._randoms[f'W{w}'].sum() * self.alpha
+
         return self._I[w]
 
     def W(self, W):

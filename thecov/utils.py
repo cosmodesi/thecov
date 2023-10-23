@@ -238,9 +238,9 @@ def plot_cov_array(cova, covb=None, k=None, kmax=None, num_multipoles=3, label_a
     import itertools as itt
     from . import base
 
-    matplotlib.rc('font', size=14, family='STIXGeneral')
-    matplotlib.rc('axes', labelsize=18)
-    matplotlib.rc('text', usetex=True)
+    # matplotlib.rc('font', size=14, family='STIXGeneral')
+    matplotlib.rc('axes', labelsize=18) 
+    # matplotlib.rc('text', usetex=True)
     matplotlib.rcParams['figure.dpi']= 100
     matplotlib.rcParams['figure.facecolor']= 'white'
 
@@ -255,14 +255,15 @@ def plot_cov_array(cova, covb=None, k=None, kmax=None, num_multipoles=3, label_a
     if k is None:
         if isinstance(cova, base.FourierBinned):
             k = cova.kmid
-            axes.set_xlabel(r"$k$  [h/Mpc]")
-            axes.set_ylabel(r"$k$  [h/Mpc]")
+            axes.set_xlabel(r"k  [h/Mpc]")
+            axes.set_ylabel(r"k  [h/Mpc]")
         else:
             k = np.arange(cova.shape[0])
     else:
-        axes.set_xlabel(r"$k$  [h/Mpc]")
-        axes.set_ylabel(r"$k$  [h/Mpc]")
 
+        axes.set_xlabel(r"k  [h/Mpc]")
+        axes.set_ylabel(r"k  [h/Mpc]")
+        
     # if k goes from kmin to kmax only once, repeat it num_multipoles for mono/quadru/hexadeca/...pole
     if len(k) == cova.shape[0]//num_multipoles:
         k = np.concatenate(num_multipoles*[k])

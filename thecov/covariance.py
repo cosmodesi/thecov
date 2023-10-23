@@ -54,9 +54,11 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
         -------
         float
             Shotnoise value.'''
-        if self.alphabar is None:
+        
+        if isinstance(geometry, geometry.SurveyGeometry):
+            return (1 + self.alphabar) * self.geometry.I('12')/self.geometry.I('22')
+        else:
             return self.geometry.shotnoise
-        return (1 + self.alphabar) * self.geometry.I('12')/self.geometry.I('22')
 
     def set_shotnoise(self, shotnoise):
         '''Set shotnoise to specified value. Also scales alphabar so that (1 + alphabar)*I12/I22
