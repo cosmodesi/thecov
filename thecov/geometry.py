@@ -372,7 +372,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         '''
         w = W.lower().replace("w", "")
 
-        if f'W{w}' not in self._randoms.columns:
+        if f'W{w}' not in self._randoms.columns():
             self._randoms[f'W{w}'] = self._randoms['NZ']**(
                 int(w[0])-1) * self._randoms['WEIGHT_FKP']**int(w[1])*self._randoms[f'WEIGHT']
 
