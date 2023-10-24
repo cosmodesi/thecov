@@ -47,6 +47,8 @@ covariance.compute_covariance()
 from cosmoprimo.fiducial import DESI
 from mockfactory import Catalog, utils
 
+from thecov import SurveyGeometry, GaussianCovariance
+
 # Define cosmology used in coordinate transformations
 cosmo = DESI()
 
