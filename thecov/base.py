@@ -579,7 +579,7 @@ class FourierBinned:
             The edges of the k-bins.
         '''
 
-        return np.arange(self.kmin, self.kmax + self.dk, self.dk)
+        return np.arange(self.kmin, self.kmax + self.dk/2, self.dk)
 
     @property
     def kfun(self):
