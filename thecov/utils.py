@@ -204,65 +204,58 @@ def cov2cor(covariance):
     correlation[covariance == 0] = 0
     return correlation
 
-def plot_cov_array(cova, covb=None, k=None, kmax=None, num_multipoles=3, label_a=None, label_b=None, vmin=-1, vmax=1, num_ticks=5, **kwargs):
+def plot_cov(cov, label=None, kmax=None, num_ticks=5, plot_sizes={}, **kwargs):
     '''Plot the correlation matrix of a covariance matrix in array form.
 
     Parameters
     ----------
-    cova : array_like
+    cov : covariance or list of covariances
         Covariance matrix.
-    covb : array_like, optional
-        Second covariance matrix to plot. Default is None.
-    k : array_like, optional
-        k bins of the covariance matrix. Default is None.
+    label : str or list of str
+        Label(s) for the covariance matrix (or matrices). Default is None.
     kmax : float, optional
         Maximum k to plot. Default is None.
-    num_multipoles : int, optional
-        Number of multipoles to plot. Default is 3.
-    label_a : str, optional
-        Label for the first covariance matrix. Default is None.
-    label_b : str, optional
-        Label for the second covariance matrix. Default is None.
-    vmin : float, optional
-        Minimum value of the colorbar. Default is -1.
-    vmax : float, optional
-        Maximum value of the colorbar. Default is 1.
     num_ticks : int, optional
         Number of ticks on the axes. Default is 5.
     **kwargs
         Additional arguments to pass to matplotlib's imshow.
     '''
+    
+    cova, covb = cov if hasattr(cov, '__len__') else (cov, None)
+    label_a, label_b = label if hasattr(label, '__len__') else (label, None)
+
     import matplotlib.pyplot as plot
     import matplotlib
     from matplotlib.colors import LinearSegmentedColormap
     import itertools as itt
     from . import base
 
-    # matplotlib.rc('font', size=14, family='STIXGeneral')
-    matplotlib.rc('axes', labelsize=18) 
-    # matplotlib.rc('text', usetex=True)
-    matplotlib.rcParams['figure.dpi']= 100
+    matplotlib.rc('font', family='STIXGeneral')
+    matplotlib.rc('text', usetex=True)
+    matplotlib.rcParams['figure.dpi']= 150
     matplotlib.rcParams['figure.facecolor']= 'white'
 
-    color_a = '#333'
-    color_b = '#e13'
-    color_c = '#1e3'
+    _plot_sizes = {
+        'figsize': (9,8),
+        'labelsize': 26,
+        'ticksize': 20,
+        'legendsize': 20,
+    }
+
+    _plot_sizes.update(plot_sizes)
 
     cmap = LinearSegmentedColormap.from_list("cmap_name", ['#04f', '#fff', '#f30'])
 
-    fig, axes = plot.subplots(1, 1, figsize=(12,10), sharey=True, facecolor='white')
+    fig, axes = plot.subplots(1, 1, figsize=_plot_sizes['figsize'], sharey=True, facecolor='white')
 
-    if k is None:
-        if isinstance(cova, base.FourierBinned):
-            k = cova.kmid
-            axes.set_xlabel(r"k  [h/Mpc]")
-            axes.set_ylabel(r"k  [h/Mpc]")
-        else:
-            k = np.arange(cova.shape[0])
+    if isinstance(cova, base.FourierBinned) or isinstance(covb, base.FourierBinned):
+        k = cova.kmid if isinstance(cova, base.FourierBinned) else covb.kmid
+        axes.set_xlabel(r"k  [h/Mpc]", fontsize=_plot_sizes['labelsize'])
+        axes.set_ylabel(r"k  [h/Mpc]", fontsize=_plot_sizes['labelsize'])
     else:
+        k = np.arange(cova.shape[0])
 
-        axes.set_xlabel(r"k  [h/Mpc]")
-        axes.set_ylabel(r"k  [h/Mpc]")
+    num_multipoles = len(cova.ells)
         
     # if k goes from kmin to kmax only once, repeat it num_multipoles for mono/quadru/hexadeca/...pole
     if len(k) == cova.shape[0]//num_multipoles:
@@ -270,7 +263,7 @@ def plot_cov_array(cova, covb=None, k=None, kmax=None, num_multipoles=3, label_a
 
     if covb is not None:
         cov = triangle_cov(cova.cor if isinstance(cova, base.Covariance) else cov2cor(cova),
-                            covb.cor if isinstance(covb, base.Covariance) else cov2cor(covb))
+                           covb.cor if isinstance(covb, base.Covariance) else cov2cor(covb))
     else:
         cov = cova.cor if isinstance(cova, base.Covariance) else cov2cor(cova)
 
@@ -296,51 +289,23 @@ def plot_cov_array(cova, covb=None, k=None, kmax=None, num_multipoles=3, label_a
         axes.axhline((i+1)*kbins,  color='#888', ls='dashed', lw=1)
 
     for i,j in itt.combinations_with_replacement(range(num_multipoles), 2):
-        axes.text((i+1/2)*kbins, (j+1/2)*kbins, f'{2*i}{2*j}', fontsize='18')
-        axes.text((j+1/2)*kbins, (i+1/2)*kbins, f'{2*i}{2*j}', fontsize='18')
+        axes.text((i+1/2)*kbins - 4, (j+1/2)*kbins - 4, f'{2*i}{2*j}', fontsize=_plot_sizes['ticksize'])
+        axes.text((j+1/2)*kbins - 4, (i+1/2)*kbins - 4, f'{2*i}{2*j}', fontsize=_plot_sizes['ticksize'])
 
     if label_a is not None:
-        axes.text(kbins*0.04, (num_multipoles-0.12)*kbins,  label_a,  fontsize=20)
+        axes.text(kbins*0.04, (num_multipoles-0.18)*kbins,  label_a,  fontsize=_plot_sizes['legendsize'])
     if label_b is not None:
-        axes.text((num_multipoles - 0.05*(len(label_b) + 1.5))*kbins, 0.04*kbins, label_b, fontsize=20)
+        axes.text((num_multipoles - 0.07*(len(label_b) + 1.5))*kbins, 0.04*kbins, label_b, fontsize=_plot_sizes['legendsize'])
 
     # axes.text(10, 3*kbins+20, r'$P_\ell(k)$ correlation matrix.')
+    plot.yticks(fontsize=_plot_sizes['ticksize'])
+    plot.xticks(fontsize=_plot_sizes['ticksize'], rotation=45)
 
-    colorbar = fig.colorbar(axes.imshow(cov, origin='lower', vmin=vmin, vmax=vmax, cmap=cmap, **kwargs), pad=0.01)
+    colorbar = fig.colorbar(axes.imshow(cov, origin='lower', vmin=-1, vmax=1, cmap=cmap, **kwargs), pad=0.01)
     fig.tight_layout()
     return fig, axes, colorbar
 
-def plot_cov(cova, covb=None, kmax=None, label_a=None, label_b=None, vmin=-1, vmax=1, num_ticks=5, **kwargs):
-    '''Plot the correlation matrix of a Covariance object.
-
-    Parameters
-    ----------
-    cova : Covariance
-        Covariance matrix.
-    covb : Covariance, optional
-        Second covariance matrix to plot. Default is None.
-    kmax : float, optional
-        Maximum k to plot. Default is None.
-    label_a : str, optional
-        Label for the first covariance matrix. Default is None.
-    label_b : str, optional
-        Label for the second covariance matrix. Default is None.
-    vmin : float, optional
-        Minimum value of the colorbar. Default is -1.
-    vmax : float, optional
-        Maximum value of the colorbar. Default is 1.
-    num_ticks : int, optional
-        Number of ticks on the axes. Default is 5.
-    **kwargs
-        Additional arguments to pass to matplotlib's imshow.
-
-    Returns
-    -------
-    fig, axes, colorbar : matplotlib figure, axes, and colorbar
-    '''
-    return plot_cov_array(cova=cova.cov, covb=covb.cov if covb is not None else None, k=cova.kmid, kmax=kmax, label_a=None, label_b=None, vmin=-1, vmax=1, num_ticks=5, **kwargs)
-
-def plot_cov_diag(cov, k=None, label=None, klim=None, colors=['k', 'r', 'g', 'b'], portrait=False, logplot=True, fracdif_range=None):
+def plot_cov_diag(cov, k=None, label=None, klim=None, colors=['k', 'r', 'g', 'b'], portrait=False, logplot=True, fracdif_range=None, div_by_pk=True, plot_sizes={}):
     '''Plot the diagonal of a MultipoleCovariance object.
 
     Parameters
@@ -359,6 +324,7 @@ def plot_cov_diag(cov, k=None, label=None, klim=None, colors=['k', 'r', 'g', 'b'
     -------
     fig, axes1, axes2 : matplotlib figure and axes (for main plot and fractional difference)
     '''
+
     if not isinstance(cov, collections.abc.Sequence):
         cov = [cov]
 
@@ -368,6 +334,14 @@ def plot_cov_diag(cov, k=None, label=None, klim=None, colors=['k', 'r', 'g', 'b'
     if not isinstance(label, collections.abc.Sequence):
         label = [label]
 
+    _plot_sizes = {
+        'figsize': (15,15) if portrait else (20,10),
+        'labelsize': 26,
+        'ticksize': 20,
+        'legendsize': 20,
+    }
+
+    _plot_sizes.update(plot_sizes)
 
     if len(cov) == 1:
         if portrait:
@@ -400,12 +374,11 @@ def plot_cov_diag(cov, k=None, label=None, klim=None, colors=['k', 'r', 'g', 'b'
                 break
 
     p2 = 1
-    div_by_p2 = False
-    for c in cov:
-        if hasattr(c, 'get_pk'):
-            p2 = c.get_pk(0)**2
-            div_by_p2 = True
-            break
+    if div_by_pk:
+        for c in cov:
+            if hasattr(c, 'get_pk'):
+                p2 = c.get_pk(0)**2
+                break
 
     for (l1, l2), ax1, ax2 in zip([(0,0), (2,2), (4,4), (0,2), (0,4), (2,4)], axes1, axes2):
 
@@ -424,8 +397,8 @@ def plot_cov_diag(cov, k=None, label=None, klim=None, colors=['k', 'r', 'g', 'b'
 
             ax2.plot(k,  a/b-1, label='frac. diff', c=color)
 
-        ax1.set_ylabel(f"$C_{{{l1}{l2}}}(k,k){r'/P_0(k)^2' if div_by_p2 else ''}$")
-        ax2.set_xlabel('k [h/Mpc]')
+        ax1.set_ylabel(f"$C_{{{l1}{l2}}}(k,k){r'/P_0(k)^2' if div_by_pk else ''}$", fontsize=_plot_sizes['labelsize'])
+        ax2.set_xlabel('k [h/Mpc]', fontsize=_plot_sizes['labelsize'])
 
         if len(cov) > 1:
 
