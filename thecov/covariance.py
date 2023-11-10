@@ -35,7 +35,7 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
     '''
     logger = logging.getLogger('GaussianCovariance')
 
-    def __init__(self, geometry):
+    def __init__(self, geometry=None):
         base.MultipoleFourierCovariance.__init__(self)
 
         self.geometry = geometry
@@ -70,7 +70,7 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
             shotnoise = (1 + alpha)*I12/I22.
         '''
 
-        self.logger.info(f'Estimated shotnoise was {self.geometry.shotnoise}')
+        self.logger.info(f'Estimated shotnoise was {self.shotnoise}')
         self.logger.info(f'Setting shotnoise to {shotnoise}.')
         # self.geometry.shotnoise = shotnoise
         self.alphabar = shotnoise * self.geometry.I('22') / self.geometry.I('12') - 1
