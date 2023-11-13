@@ -785,3 +785,9 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierBinned):
         self.logger.info(f'kcut to {self.kmin} < k < {self.kmax}')
 
         return self
+    
+    def set_kbins(self, kmin, kmax, dk, nmodes=None):
+        size = (kmax - kmin)/dk
+        size = (np.round(size) if np.allclose(np.round(size), size) else size).astype(int)
+        self._mshape = (size, size)
+        return super().set_kbins(kmin, kmax, dk, nmodes)
