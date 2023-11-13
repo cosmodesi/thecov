@@ -471,8 +471,7 @@ class MultipoleCovariance(Covariance):
 
         return cov
 
-    @classmethod
-    def loadtxt(cls, *args, **kwargs):
+    def loadtxt(self, *args, **kwargs):
         '''Loads the covariance from a text file with a specified filename.
 
         Parameters
@@ -486,7 +485,7 @@ class MultipoleCovariance(Covariance):
             A MultipoleCovariance object.
         '''
 
-        return cls.from_array(np.loadtxt(*args, **kwargs))
+        return self.from_array(np.loadtxt(*args, **kwargs))
 
 
 class FourierBinned:
