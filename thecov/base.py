@@ -485,7 +485,8 @@ class MultipoleCovariance(Covariance):
             A MultipoleCovariance object.
         '''
 
-        return self.from_array(np.loadtxt(*args, **kwargs))
+        self.set_full_cov(np.loadtxt(*args, **kwargs))
+        return self
 
 
 class FourierBinned:
