@@ -560,15 +560,15 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         .. [1] https://arxiv.org/abs/1910.02914
         '''
 
-        kfun = 2 * np.pi / self.boxsize
+        # kfun = 2 * np.pi / self.boxsize
 
-        kmodes = np.array([[utils.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(
-                           self.kmodes_sampled)] for kmin, kmax in zip(self.kedges[:-1], self.kedges[1:])])
+        # kmodes = np.array([[utils.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(
+        #                    self.kmodes_sampled)] for kmin, kmax in zip(self.kedges[:-1], self.kedges[1:])])
 
-        Nmodes = utils.nmodes(self.boxsize**3, self.kedges[:-1], self.kedges[1:])
+        # Nmodes = utils.nmodes(self.boxsize**3, self.kedges[:-1], self.kedges[1:])
 
         # sample kmodes from each k1 bin
-        # kmodes, Nmodes = utils.sample_kmodes(self.kmax, self.dk, self.boxsize, self.kmodes_sampled)
+        kmodes, Nmodes = utils.sample_kmodes(self.kmax, self.dk, self.boxsize, self.kmodes_sampled)
 
         # kmodes, Nmodes = utils.sample_from_cube(self.kmax/kfun, self.dk/kfun, self.kmodes_sampled)
 
