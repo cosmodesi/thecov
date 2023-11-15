@@ -237,3 +237,68 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
             warnings.warn('Covariance matrix is not symmetric.')
 
         return self
+
+    def load_pk(self, filename, remove_shotnoise=None, set_shotnoise=True):
+        '''Load power spectrum from pypower file and set it to be used for the covariance calculation.
+
+        Parameters
+        ----------
+        filename : str
+            Name of the pypower file containing the power spectrum.
+        remove_shotnoise : bool, optional
+            Whether pypower should be used to remove the shotnoise from the power spectrum monopole.
+            If None, will be determined based on the geometry used.
+        set_shotnoise : bool, optional
+            Whether to rescale shotnoise matching the value in the power spectrum file.
+        '''
+
+        from pypower import PowerSpectrumMultipoles
+        
+        self.logger.info(f'Loading power spectrum from {filename}.')
+        pypower = PowerSpectrumMultipoles.load(filename)
+
+        kmin_file, kmax_file = pypower.kedges[[0, -1]]
+        dk_file = np.diff(pypower.kedges).mean()
+
+        if not self.is_kbins_set:
+            self.set_kbins(kmin_file, kmax_file, dk_file)
+
+        if self.kmin < kmin_file or self.kmax > kmax_file:
+            raise ValueError('kmin and kmax of the covariance matrix must be within the range of the power spectrum file.')
+
+        imin = np.round((self.kmin - kmin_file)/dk_file).astype(int)
+        imax = np.round((self.kmax - kmin_file)/dk_file).astype(int)
+        di   = self.dk/dk_file
+
+        self.logger.info(f'Cutting power spectrum from {kmin_file} < k < {kmax_file} to {self.kmin} < k < {self.kmax}.')
+        
+        if np.allclose(np.round(di), di):
+            di = np.round(di).astype(int)
+        else:
+            raise ValueError(f'dk = {self.dk} must be a multiple of dk_file = {dk_file}.')
+        if di != 1:
+            self.logger.info(f'Rebinning power spectrum by a factor of {di}. From dk = {dk_file} to dk = {self.dk}.')
+
+        if remove_shotnoise is None:
+            if self.geometry is None:
+                remove_shotnoise = True
+            elif isinstance(self.geometry, geometry.BoxGeometry):
+                remove_shotnoise = False
+            elif isinstance(self.geometry, geometry.SurveyGeometry):
+                remove_shotnoise = True
+            else:
+                remove_shotnoise = True
+
+        if remove_shotnoise:
+            self.logger.info('pypower is removing shotnoise from the power spectrum.')
+        else:
+            self.logger.info('pypower is NOT removing shotnoise from the power spectrum.')
+
+        P0, P2, P4 = pypower[imin:imax:di].get_power(remove_shotnoise=remove_shotnoise, complex=False)
+
+        if set_shotnoise and self.geometry is not None:
+            self.set_shotnoise(shotnoise = pypower.shotnoise)
+
+        self.set_pk(P0, 0, has_shotnoise=not remove_shotnoise)
+        self.set_pk(P2, 2)
+        self.set_pk(P4, 4)
