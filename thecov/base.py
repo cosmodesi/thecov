@@ -690,7 +690,7 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierBinned):
     def __init__(self):
         MultipoleCovariance.__init__(self)
         FourierBinned.__init__(self)
-        logger = logging.getLogger('GaussianCovariance')
+        self.logger = logging.getLogger('MultipoleFourierCovariance')
 
     @property
     def kmid_matrices(self):
