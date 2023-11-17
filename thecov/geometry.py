@@ -273,6 +273,11 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         Number of k modes to be sampled in the calculation of the window kernels.
     alpha : float
         Factor to multiply the number density of the randoms. Default is 1.0.
+    nthreads : int
+        Number of threads to be used in the calculation of the window kernels.
+    resume_file : str
+        Name of the file to save the window kernels as they are calculated. If the file exists, the
+        calculation is resumed from it.
     tqdm : callable
         Function to be used for progress bar. Default is tqdm from tqdm package.
 
@@ -297,9 +302,11 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     '''
     logger = logging.getLogger('SurveyGeometry')
 
-    def __init__(self, randoms, nmesh=None, cellsize=None, boxsize=None, boxpad=2.0, kmax_mask=0.05, delta_k_max=3, kmodes_sampled=400, alpha=1.0, nthreads=None, tqdm=shell_tqdm, **kwargs):
+    def __init__(self, randoms, nmesh=None, cellsize=None, boxsize=None, boxpad=2.0, kmax_mask=0.05, delta_k_max=3, kmodes_sampled=400, alpha=1.0, nthreads=None, resume_file=None, tqdm=shell_tqdm, **kwargs):
 
         base.FourierBinned.__init__(self)
+
+        self.resume_file = resume_file
 
         self.alpha = alpha
         self.delta_k_max = delta_k_max
@@ -599,11 +606,27 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             shared_params = args[-1]
 
         # Format is [k1_bins, k2_bins, P_i x P_j term, Cov_ij]
-        self.WinKernel = np.zeros([self.kbins, 2*self.delta_k_max+1, 15, 6])
-        
+        self.WinKernel = np.empty([self.kbins, 2*self.delta_k_max+1, 15, 6])
+        self.WinKernel.fill(np.nan)
+
+        if self.resume_file is not None:
+            try:
+                self.load_attributes(self.resume_file, ['WinKernel'])
+                self.logger.warning(f'Loaded resume file {self.resume_file}.')
+            except FileNotFoundError:
+                self.logger.warning(f'File {self.resume_file} not found. Creating resume file.')
+                utils.mkdir(os.path.dirname(self.resume_file))
+                self.save_attributes(self.resume_file, ['WinKernel'])
+
         for i, km in self.tqdm(enumerate(kmodes), desc='Computing window kernels', total=self.kbins):
-            k1_bin_index = i + self.kmin//self.dk
-            init_params['k1_bin_index'] = k1_bin_index
+
+            if self.resume_file is not None:
+                # Skip rows that were already computed
+                if not np.isnan(self.WinKernel[i,0,0,0]):
+                    # self.logger.debug(f'Skipping bin {i} of {self.kbins}.')
+                    continue
+
+            init_params['k1_bin_index'] = i + self.kmin//self.dk
             kmodes_sampled = len(km)
 
             # Splitting kmodes in chunks to be sent to each worker
@@ -620,6 +643,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                         self.WinKernel[i, k2_bin_index, :, :] = 0
                     else:
                         self.WinKernel[i, k2_bin_index, :, :] /= Nmodes[i + k2_bin_index - self.delta_k_max]
+
+            if self.resume_file is not None:
+                self.save_attributes(self.resume_file, ['WinKernel'])
 
         ell_factor = lambda l1,l2: (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
             
