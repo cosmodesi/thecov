@@ -87,6 +87,16 @@ class Covariance:
         new_cov = copy.deepcopy(self)
         new_cov.symmetrize()
         return new_cov
+    
+    def regularize(self):
+        eigvals, eigvecs = self.eig
+        eigvals[eigvals < 0] = 0
+        self.cov = np.einsum('ij,jk,kl->il', eigvecs, np.diag(eigvals), eigvecs.T)
+    
+    def regularized(self):
+        new_cov = copy.deepcopy(self)
+        new_cov.regularize()
+        return new_cov
 
     def __add__(self, y):
         obj = copy.deepcopy(self)
