@@ -583,14 +583,11 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self.compute_cartesian_fft('W22')
 
         init_params = {
-            'I22': self.I('22'),
             'boxsize': self.boxsize,
-            'kbins': self.kbins,
             'dk': self.dk,
             'nmesh': self.nmesh,
             'ikgrid': self._ikgrid,
             'delta_k_max': self.delta_k_max,
-            'nmodes': Nmodes,
         }
 
         def init_worker(*args):
@@ -601,59 +598,46 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                 shared_w[l] = np.frombuffer(w).view(np.complex128).reshape(self.nmesh, self.nmesh, self.nmesh)
             shared_params = args[-1]
 
-        # Calls the function _compute_window_kernel_row in parallel for each k1 bin
-        with mp.Pool(processes=min(self.nthreads, len(kmodes)), initializer=init_worker, initargs=[*[self._W[w] for w in W_LABELS], init_params]) as pool:
-            self.WinKernel = np.array(list(self.tqdm(pool.imap(self._compute_window_kernel_row, enumerate(
-                kmodes)), total=len(kmodes), desc="Computing window kernels")))
+        # Format is [k1_bins, k2_bins, P_i x P_j term, Cov_ij]
+        self.WinKernel = np.zeros([self.kbins, 2*self.delta_k_max+1, 15, 6])
+        
+        for i, km in self.tqdm(enumerate(kmodes), desc='Computing window kernels', total=self.kbins):
+            k1_bin_index = i + self.kmin//self.dk
+            init_params['k1_bin_index'] = k1_bin_index
+            kmodes_sampled = len(km)
 
-        # self.WinKernel = np.array([
-        #     self._compute_window_kernel_row(Nbin)
-        #     for Nbin in self.tqdm(range(self.kbins), total=self.kbins, desc="Computing window kernels")])
+            # Splitting kmodes in chunks to be sent to each worker
+            chunks = np.array_split(km, self.nthreads)
 
-    def save_window_kernels(self, filename):
-        '''Save the window kernels to a file.
+            with mp.Pool(processes=min(self.nthreads, len(chunks)),
+                         initializer=init_worker,
+                         initargs=[*[self._W[w] for w in W_LABELS], init_params]) as pool:
+                
+                self.WinKernel[i] = np.sum(pool.map(self._compute_window_kernel_row, chunks), axis=0) / kmodes_sampled
+        
+                for k2_bin_index in range(0, 2*self.delta_k_max + 1):
+                    if (k2_bin_index + i - self.delta_k_max >= self.kbins or k2_bin_index + i - self.delta_k_max < 0):
+                        self.WinKernel[i, k2_bin_index, :, :] = 0
+                    else:
+                        self.WinKernel[i, k2_bin_index, :, :] /= Nmodes[i + k2_bin_index - self.delta_k_max]
 
-        Parameters
-        ----------
-        filename : str
-            Name of the file to save the window kernels.'''
-        self.save_attributes(filename, ['alpha',
-                                       'delta_k_max',
-                                       'kmodes_sampled',
-                                       'shotnoise',
-                                       'ngals',
-                                       'boxsize',
-                                       'nmesh',
-                                       'dk',
-                                       'kmax',
-                                       'kmin',
-                                       'WinKernel'])
+        ell_factor = lambda l1,l2: (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
+            
+        self.WinKernel[:, :, :, 0] *= ell_factor(0,0)
+        self.WinKernel[:, :, :, 1] *= ell_factor(2,2)
+        self.WinKernel[:, :, :, 2] *= ell_factor(4,4)
+        self.WinKernel[:, :, :, 3] *= ell_factor(2,0)
+        self.WinKernel[:, :, :, 4] *= ell_factor(4,0)
+        self.WinKernel[:, :, :, 5] *= ell_factor(4,2)
 
-    def load_window_kernels(self, filename):
-        '''Load the window kernels from a file.
+        self.WinKernel /= self.I('22')**2
+                
+        self.logger.info('Window kernels computed.')
 
-        Parameters
-        ----------
-        filename : str
-            Name of the file to load the window kernels from.
-        '''
-        self.load_attributes(filename)
-
-    @classmethod
-    def from_window_kernels_file(cls, filename):
-        '''Create geometry object from window kernels file.
-
-        Parameters
-        ----------
-        filename : str
-            Name of the file to load the window kernels from.
-        '''
-        geometry = cls.__new__(cls)
-        geometry.load_window_kernels(filename)
-        return geometry
+        return self.WinKernel
 
     @staticmethod
-    def _compute_window_kernel_row(args):
+    def _compute_window_kernel_row(bin_kmodes):
         '''Computes a row of the window kernels. This function is called in parallel for each k1 bin.'''
         # Gives window kernels for L=0,2,4 auto and cross covariance (instead of only L=0 above)
 
@@ -666,36 +650,24 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         #    The last dim corresponds to multipoles: [L0xL0,L2xL2,L4xL4,L2xL0,L4xL0,L4xL2]
 
-        k1_bin_index, bin_kmodes = args
-        I22 = shared_params['I22']
+        k1_bin_index = shared_params['k1_bin_index']
         boxsize = shared_params['boxsize']
         kfun = 2 * np.pi / boxsize
-        nbins = shared_params['kbins']
         dk = shared_params['dk']
 
         W = shared_w
-
-        # nmodes = utils.nmodes(boxsize**3, kedges[:-1], kedges[1:])
-        nmodes = shared_params['nmodes']
 
         # The Gaussian covariance drops quickly away from diagonal.
         # Only delta_k_max points to each side of the diagonal are calculated.
         delta_k_max = shared_params['delta_k_max']
 
-        avgW00 = np.zeros((2*delta_k_max+1, 15), dtype='<c8')
-        avgW22 = avgW00.copy()
-        avgW44 = avgW00.copy()
-        avgW20 = avgW00.copy()
-        avgW40 = avgW00.copy()
-        avgW42 = avgW00.copy()
+        WinKernel = np.zeros((2*delta_k_max+1, 15, 6))
 
         iix, iiy, iiz = np.meshgrid(*shared_params['ikgrid'], indexing='ij')
 
         k2xh = np.zeros_like(iix)
         k2yh = np.zeros_like(iiy)
         k2zh = np.zeros_like(iiz)
-
-        kmodes_sampled = len(bin_kmodes)
 
         for ik1x, ik1y, ik1z, ik1r in bin_kmodes:
 
@@ -964,43 +936,57 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
                 # Iterating over terms (m,m') that will multiply P_m(k1)*P_m'(k2) in the sum
                 for term in range(15):
-                    avgW00[delta_k + delta_k_max, term] += np.sum(C00exp[term][modes])
-                    avgW22[delta_k + delta_k_max, term] += np.sum(C22exp[term][modes])
-                    avgW44[delta_k + delta_k_max, term] += np.sum(C44exp[term][modes])
-                    avgW20[delta_k + delta_k_max, term] += np.sum(C20exp[term][modes])
-                    avgW40[delta_k + delta_k_max, term] += np.sum(C40exp[term][modes])
-                    avgW42[delta_k + delta_k_max, term] += np.sum(C42exp[term][modes])
+                    WinKernel[delta_k + delta_k_max, term, 0] += np.sum(np.real(C00exp[term][modes]))
+                    WinKernel[delta_k + delta_k_max, term, 1] += np.sum(np.real(C22exp[term][modes]))
+                    WinKernel[delta_k + delta_k_max, term, 2] += np.sum(np.real(C44exp[term][modes]))
+                    WinKernel[delta_k + delta_k_max, term, 3] += np.sum(np.real(C20exp[term][modes]))
+                    WinKernel[delta_k + delta_k_max, term, 4] += np.sum(np.real(C40exp[term][modes]))
+                    WinKernel[delta_k + delta_k_max, term, 5] += np.sum(np.real(C42exp[term][modes]))
+        
+        return WinKernel
+    
+    def save_window_kernels(self, filename):
+        '''Save the window kernels to a file.
 
-        for i in range(0, 2*delta_k_max + 1):
-            if (i + k1_bin_index - delta_k_max >= nbins or i + k1_bin_index - delta_k_max < 0):
-                avgW00[i] = 0
-                avgW22[i] = 0
-                avgW44[i] = 0
-                avgW20[i] = 0
-                avgW40[i] = 0
-                avgW42[i] = 0
-            else:
-                avgW00[i] /= kmodes_sampled*nmodes[k1_bin_index + i - delta_k_max]*I22**2
-                avgW22[i] /= kmodes_sampled*nmodes[k1_bin_index + i - delta_k_max]*I22**2
-                avgW44[i] /= kmodes_sampled*nmodes[k1_bin_index + i - delta_k_max]*I22**2
-                avgW20[i] /= kmodes_sampled*nmodes[k1_bin_index + i - delta_k_max]*I22**2
-                avgW40[i] /= kmodes_sampled*nmodes[k1_bin_index + i - delta_k_max]*I22**2
-                avgW42[i] /= kmodes_sampled*nmodes[k1_bin_index + i - delta_k_max]*I22**2
+        Parameters
+        ----------
+        filename : str
+            Name of the file to save the window kernels.'''
+        self.save_attributes(filename, ['alpha',
+                                       'delta_k_max',
+                                       'kmodes_sampled',
+                                       'shotnoise',
+                                       'ngals',
+                                       'boxsize',
+                                       'nmesh',
+                                       'dk',
+                                       'kmax',
+                                       'kmin',
+                                       'WinKernel'])
 
-        def l_factor(l1, l2):
-            return (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
+    def load_window_kernels(self, filename):
+        '''Load the window kernels from a file.
 
-        avgWij = np.zeros((2*delta_k_max+1, 15, 6))
+        Parameters
+        ----------
+        filename : str
+            Name of the file to load the window kernels from.
+        '''
+        self.load_attributes(filename)
 
-        avgWij[:, :, 0] = l_factor(0,0)*np.real(avgW00)
-        avgWij[:, :, 1] = l_factor(2,2)*np.real(avgW22)
-        avgWij[:, :, 2] = l_factor(4,4)*np.real(avgW44)
-        avgWij[:, :, 3] = l_factor(2,0)*np.real(avgW20)
-        avgWij[:, :, 4] = l_factor(4,0)*np.real(avgW40)
-        avgWij[:, :, 5] = l_factor(4,2)*np.real(avgW42)
+    @classmethod
+    def from_window_kernels_file(cls, filename):
+        '''Create geometry object from window kernels file.
 
-        return avgWij
-
+        Parameters
+        ----------
+        filename : str
+            Name of the file to load the window kernels from.
+        '''
+        geometry = cls.__new__(cls)
+        geometry.load_window_kernels(filename)
+        return geometry
+    
     @property
     def shotnoise(self):
         if self._shotnoise is None:
@@ -1018,3 +1004,4 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     @nbar.setter
     def nbar(self, nbar):
         self.shotnoise = 1 / nbar
+
