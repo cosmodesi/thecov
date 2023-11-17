@@ -560,20 +560,24 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         .. [1] https://arxiv.org/abs/1910.02914
         '''
 
-        # kfun = 2 * np.pi / self.boxsize
+        # sample kmodes from each k1 bin
 
+        # SAMPLE FROM SHELL
+        # kfun = 2 * np.pi / self.boxsize
         # kmodes = np.array([[utils.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(
         #                    self.kmodes_sampled)] for kmin, kmax in zip(self.kedges[:-1], self.kedges[1:])])
-
         # Nmodes = utils.nmodes(self.boxsize**3, self.kedges[:-1], self.kedges[1:])
 
-        # sample kmodes from each k1 bin
-        kmodes, Nmodes = utils.sample_kmodes(self.kmax, self.dk, self.boxsize, self.kmodes_sampled)
-
+        # SAMPLE FROM CUBE
         # kmodes, Nmodes = utils.sample_from_cube(self.kmax/kfun, self.dk/kfun, self.kmodes_sampled)
 
-        # Note: as the window falls steeply with k, only low-k regions are needed for the calculation.
-        # Therefore, high-k modes in the FFTs can be discarded
+        # HYBRID SAMPLING
+        kmodes, Nmodes = utils.sample_kmodes(kmin=self.kmin,
+                                             kmax=self.kmax,
+                                             dk=self.dk,
+                                             boxsize=self.boxsize,
+                                             max_modes=self.kmodes_sampled,
+                                             k_shell_approx=0.1)
 
         self.compute_cartesian_fft('W12')
         self.compute_cartesian_fft('W22')

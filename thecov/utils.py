@@ -120,18 +120,18 @@ def sample_from_shell(rmin, rmax, discrete=True):
 
     return x,y,z,r
 
-def sample_from_cube(rmax, dr, max_modes:int=200):
+def sample_from_cube(rmin, rmax, dr, max_modes=np.inf):
 
     iL = np.ceil(rmax).astype(int)
 
     ix, iy, iz = np.mgrid[-iL:iL+1,-iL:iL+1,-iL:iL+1]
     ir = np.sqrt(ix**2 + iy**2 + iz**2)
 
-    sort = (ir/dr).astype(int)
+    sort = ((ir - rmin)/dr).astype(int)
 
     modes = []
     Nmodes = []
-    for i in range(np.ceil(rmax/dr).astype(int)):
+    for i in range(int((rmax - rmin)/dr)):
         mask = sort == i
         N = np.sum(mask)
         if N > max_modes:
@@ -149,21 +149,26 @@ def sample_from_cube(rmax, dr, max_modes:int=200):
 
     return modes, Nmodes
 
-def sample_kmodes(kmax, dk, boxsize, kmodes_sampled, shell_approx_bin=10):
+def sample_kmodes(kmin, kmax, dk, boxsize, max_modes=1000, k_shell_approx=0.05):
+    import logging
+
+    logger = logging.getLogger('SampleModes')
 
     # Wavelength where spherical shell approximation kicks in
-    k_shell = shell_approx_bin*dk
+    k_shell = max((k_shell_approx - kmin)//dk * dk + kmin, kmin)
 
     kfun = 2 * np.pi / boxsize
 
     # Uses full cube from k = 0 to k_shell
-    cube_modes, cube_nmodes = sample_from_cube(k_shell / kfun, dk / kfun, max_modes=kmodes_sampled)
+    cube_modes, cube_nmodes = sample_from_cube(kmin / kfun, k_shell / kfun, dk / kfun, max_modes=max_modes)
 
     # Uses spherical shell approximation from k = k_shell to kmax
-    kedges_shell = np.arange(k_shell, kmax + dk, dk)
+    kedges_shell = np.arange(k_shell, kmax + dk/2, dk)
     shell_modes = [np.array([sample_from_shell(kmin / kfun, kmax / kfun) for _ in range(
-                    kmodes_sampled)]) for kmin, kmax in zip(kedges_shell[:-1], kedges_shell[1:])]
+                    max_modes)]) for kmin, kmax in zip(kedges_shell[:-1], kedges_shell[1:])]
     shell_nmodes = nmodes(boxsize**3, kedges_shell[:-1], kedges_shell[1:])
+
+    logger.info(f'Sampled {len(cube_modes)} bins from cube and {len(shell_modes)} bins from shell approximation.')
 
     return cube_modes + shell_modes, np.array(cube_nmodes + list(shell_nmodes))
 
