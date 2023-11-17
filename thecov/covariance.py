@@ -89,6 +89,8 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
             Whether the power spectrum has shotnoise included or not.
         '''
 
+        assert len(pk) == self.kbins, 'Power spectrum must have the same number of bins as the covariance matrix.'
+
         if ell == 0 and has_shotnoise:
             self.logger.info(f'Removing shotnoise = {self.shotnoise} from ell = 0.')
             self._pk[ell] = pk - self.shotnoise
