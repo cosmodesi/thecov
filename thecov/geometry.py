@@ -586,6 +586,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                                              max_modes=self.kmodes_sampled,
                                              k_shell_approx=0.1)
 
+        assert len(kmodes) == self.kbins and len(Nmodes) == self.kbins, \
+            f'Error in thecov.utils.sample_kmodes: results should have length {self.kbins}.'
+
         self.compute_cartesian_fft('W12')
         self.compute_cartesian_fft('W22')
 
