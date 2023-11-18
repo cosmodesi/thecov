@@ -302,7 +302,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     '''
     logger = logging.getLogger('SurveyGeometry')
 
-    def __init__(self, randoms, nmesh=None, cellsize=None, boxsize=None, boxpad=2.0, kmax_mask=0.05, delta_k_max=3, kmodes_sampled=400, alpha=1.0, nthreads=None, resume_file=None, tqdm=shell_tqdm, **kwargs):
+    def __init__(self, randoms, nmesh=None, cellsize=None, boxsize=None, boxpad=1.2, kmax_mask=0.04, delta_k_max=10, kmodes_sampled=10000, alpha=1.0, nthreads=None, resume_file=None, tqdm=shell_tqdm, **kwargs):
 
         base.FourierBinned.__init__(self)
 
