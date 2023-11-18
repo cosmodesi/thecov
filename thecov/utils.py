@@ -122,7 +122,7 @@ def sample_from_shell(rmin, rmax, discrete=True):
 
 def sample_from_cube(rmin, rmax, dr, max_modes=np.inf):
 
-    iL = np.ceil(rmax).astype(int)
+    iL = int(np.ceil(rmax))
 
     ix, iy, iz = np.mgrid[-iL:iL+1,-iL:iL+1,-iL:iL+1]
     ir = np.sqrt(ix**2 + iy**2 + iz**2)
@@ -131,7 +131,11 @@ def sample_from_cube(rmin, rmax, dr, max_modes=np.inf):
 
     modes = []
     Nmodes = []
-    for i in range(int((rmax - rmin)/dr)):
+
+    imax = (rmax - rmin)/dr
+    imax = int(np.round(imax)) if np.allclose(np.round(imax), imax) else int(imax)
+    
+    for i in range(imax):
         mask = sort == i
         N = np.sum(mask)
         if N > max_modes:
