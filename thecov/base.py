@@ -7,6 +7,7 @@ import copy
 import numpy as np
 
 from . import utils
+import logging
 
 __all__ = ['Covariance', 'MultipoleCovariance']
 
@@ -85,6 +86,16 @@ class Covariance:
         '''
         new_cov = copy.deepcopy(self)
         new_cov.symmetrize()
+        return new_cov
+    
+    def regularize(self):
+        eigvals, eigvecs = self.eig
+        eigvals[eigvals < 0] = 0
+        self.cov = np.einsum('ij,jk,kl->il', eigvecs, np.diag(eigvals), eigvecs.T)
+    
+    def regularized(self):
+        new_cov = copy.deepcopy(self)
+        new_cov.regularize()
         return new_cov
 
     def __add__(self, y):
@@ -345,7 +356,7 @@ class MultipoleCovariance(Covariance):
 
         return sorted(self._ells)
 
-    def get_ell_cov(self, l1, l2, force_return=False):
+    def get_ell_cov(self, l1, l2, force_return=False, cls=Covariance):
         '''Returns the covariance matrix for a given pair of multipoles.
 
         Parameters
@@ -369,9 +380,9 @@ class MultipoleCovariance(Covariance):
         if (l1, l2) in self._multipole_covariance:
             return self._multipole_covariance[l1, l2]
         elif force_return:
-            return Covariance(np.zeros(self._mshape))
+            return cls(np.zeros(self._mshape))
 
-    def set_ell_cov(self, l1, l2, cov):
+    def set_ell_cov(self, l1, l2, cov, cls=Covariance):
         '''Sets the covariance matrix for a given pair of multipoles.
 
         Parameters
@@ -385,21 +396,23 @@ class MultipoleCovariance(Covariance):
         '''
 
         if l1 > l2:
-            self.set_ell_cov(l2, l1, cov.T)
-            return
+            return self.set_ell_cov(l2, l1, cov.T)
 
         if self._ells == []:
             self._mshape = cov.shape
 
-        assert cov.shape == self._mshape, "ell covariance has shape inconsistent with other ells"
+        # assert cov.shape == self._mshape, "ell covariance has shape inconsistent with other ells"
 
         if l1 not in self.ells:
             self._ells.append(l1)
         if l2 not in self.ells:
             self._ells.append(l2)
 
-        self._multipole_covariance[l1, l2] = cov if isinstance(
-            cov, Covariance) else Covariance(cov)
+        cov = cov if isinstance(cov, cls) else cls(cov)
+
+        self._multipole_covariance[l1, l2] = cov
+        
+        return cov
 
     def set_full_cov(self, cov_array, ells=(0, 2, 4)):
         '''Sets the full covariance matrix from stacked covariances for different multipoles.
@@ -430,6 +443,20 @@ class MultipoleCovariance(Covariance):
             self.set_ell_cov(l1, l2, c[i*c.shape[0]//len(ells):(i+1)*c.shape[0]//len(ells),
                                        j*c.shape[1]//len(ells):(j+1)*c.shape[1]//len(ells)])
         return self
+    
+    def foreach(self, func):
+        '''Applies a function to each covariance matrix.
+
+        Parameters
+        ----------
+        func : function
+            The function to be applied to each covariance matrix.
+        '''
+
+        for (l1, l2), cov in self._multipole_covariance.items():
+            self.set_ell_cov(l1, l2, func(cov))
+        
+        return self
 
 
     @classmethod
@@ -454,8 +481,7 @@ class MultipoleCovariance(Covariance):
 
         return cov
 
-    @classmethod
-    def loadtxt(cls, *args, **kwargs):
+    def loadtxt(self, *args, **kwargs):
         '''Loads the covariance from a text file with a specified filename.
 
         Parameters
@@ -469,7 +495,8 @@ class MultipoleCovariance(Covariance):
             A MultipoleCovariance object.
         '''
 
-        return cls.from_array(np.loadtxt(*args, **kwargs))
+        self.set_full_cov(np.loadtxt(*args, **kwargs))
+        return self
 
 
 class FourierBinned:
@@ -493,6 +520,9 @@ class FourierBinned:
         This function defines the k-bins. Only linear binning is supported.
     '''
 
+    def __init__(self) -> None:
+        self.kmin, self.kmax, self.dk, self._nmodes = None, None, None, None
+
     def set_kbins(self, kmin, kmax, dk, nmodes=None):
         '''This function defines the k-bins. Only linear binning is supported.
 
@@ -513,8 +543,7 @@ class FourierBinned:
         self.kmax = kmax
         self.kmin = kmin
 
-        if (nmodes is not None):
-            self._nmodes = nmodes
+        self._nmodes = nmodes
 
     @property
     def is_kbins_set(self):
@@ -579,7 +608,7 @@ class FourierBinned:
             The edges of the k-bins.
         '''
 
-        return np.arange(self.kmin, self.kmax + self.dk, self.dk)
+        return np.arange(self.kmin, self.kmax + self.dk/2, self.dk)
 
     @property
     def kfun(self):
@@ -620,7 +649,7 @@ class FourierBinned:
             The number of modes per k-bin shell.
         '''
 
-        if hasattr(self, '_nmodes'):
+        if self._nmodes is not None:
             return self._nmodes
 
         return utils.nmodes(self.volume, self.kedges[:-1], self.kedges[1:])
@@ -638,11 +667,40 @@ class FourierBinned:
         self._nmodes = nmodes
         return nmodes
 
+class FourierCovariance(Covariance, FourierBinned):
+
+    def __init__(self, cov):
+        Covariance.__init__(self, cov)
+        FourierBinned.__init__(self)
+    
+    @property
+    def kmid_matrices(self):
+        k1 = np.einsum('i,j->ij', self.kmid, np.ones_like(self.kmid))
+        k2 = k1.T
+
+        return k1, k2
+
+    def kcut(self, kmin=None, kmax=None):
+        if kmin is None:
+            kmin = self.kmin
+
+        if kmax is None:
+            kmax = self.kmax
+
+        imin = (self.kmid >= kmin).argmax()
+        imax = len(self.kmid) if (self.kmid <= kmax).all() else (self.kmid <= kmax).argmin()
+
+        self._covariance = self._covariance[imin:imax, imin:imax]
+        self.kmin, self.kmax = kmin, kmax
+
+        return self
+
 class MultipoleFourierCovariance(MultipoleCovariance, FourierBinned):
 
     def __init__(self):
         MultipoleCovariance.__init__(self)
         FourierBinned.__init__(self)
+        self.logger = logging.getLogger('MultipoleFourierCovariance')
 
     @property
     def kmid_matrices(self):
@@ -661,8 +719,7 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierBinned):
 
         return ell1, ell2
 
-
-    def save_table(self, filename, ells_both_ways=False, fmt=['%.d', '%.d', '%.4f', '%.4f', '%.8e']):
+    def savecsv(self, filename, ells_both_ways=False, fmt=['%.d', '%.d', '%.4f', '%.4f', '%.8e']):
         k1, k2 = self.kmid_matrices
         ell1, ell2 = self.ell_matrices
 
@@ -675,7 +732,7 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierBinned):
                                                k1[mask].reshape(-1, 1),
                                                k2[mask].reshape(-1, 1),
                                               cov[mask].reshape(-1, 1)], axis=1), fmt=fmt, header='ell1 ell2 kmid1 kmid2 cov')
-    def load_table(self, filename):
+    def loadcsv(self, filename):
         ell1, ell2, k1, k2, value = np.loadtxt(filename).T
 
         k = np.unique(k1)
@@ -711,7 +768,36 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierBinned):
         return self
 
     @classmethod
-    def from_table(cls, filename):
+    def fromcsv(cls, filename):
         cov = cls()
-        cov.load_table(filename)
+        cov.loadcsv(filename)
         return cov
+    
+    def set_ell_cov(self, l1, l2, cov, cls=FourierCovariance):
+        cov = super().set_ell_cov(l1, l2, cov, cls=cls)
+        if not cov.is_kbins_set:
+            cov.set_kbins(self.kmin, self.kmax, self.dk, self._nmodes)
+        return cov
+    
+    def get_ell_cov(self, l1, l2, force_return=False, cls=FourierCovariance):
+        return super().get_ell_cov(l1, l2, force_return, cls)
+
+    def kcut(self, kmin=None, kmax=None):
+        if kmin is None:
+            kmin = self.kmin
+
+        if kmax is None:
+            kmax = self.kmax
+
+        self.foreach(lambda cov: cov.kcut(kmin, kmax))
+        self.set_kbins(kmin, kmax, self.dk)
+        
+        self.logger.info(f'kcut to {self.kmin} < k < {self.kmax}')
+
+        return self
+    
+    def set_kbins(self, kmin, kmax, dk, nmodes=None):
+        size = (kmax - kmin)/dk
+        size = (np.round(size) if np.allclose(np.round(size), size) else size).astype(int)
+        self._mshape = (size, size)
+        return super().set_kbins(kmin, kmax, dk, nmodes)
