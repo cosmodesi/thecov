@@ -7,7 +7,7 @@ Under active development.
 Status:
 
 - Gaussian (box): ready.
-- Gaussian (cut-sky): works, but being further validated.
+- Gaussian (cut-sky): ready.
 - Regular trispectrum: interface being reworked.
 - Super-sample: to be validated.
 
