@@ -69,13 +69,13 @@ geometry = SurveyGeometry(randoms, nmesh=64, boxpad=1.2, alpha=1. / 10., kmodes_
 covariance = GaussianCovariance(geometry)
 covariance.set_kbins(kmin=0, kmax=0.4, dk=0.005)
 
+covariance.set_shotnoise(shotnoise) # optional but recommended
+
 # Load input power spectra (P0, P2, P4) for the Gaussian covariance
 
 covariance.set_pk(P0, 0, has_shotnoise=False)
 covariance.set_pk(P2, 2)
 covariance.set_pk(P4, 4)
-
-covariance.set_shotnoise(shotnoise) # optional but recommended
 
 covariance.compute_covariance()
 
