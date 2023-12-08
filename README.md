@@ -82,3 +82,30 @@ covariance.compute_covariance()
 # Covariance object has functions covariance.cov, covariance.cor,
 # covariance.get_ell_cov(ell1, ell2), etc. to output what you need.
 ```
+
+## Citations
+
+If you use this code in a scientific publication, don't forget to cite:
+
+```
+@unpublished{Alves2024prep,
+  author = "Alves, Otavio and {DESI Collaboration}",
+  title  = "Analytic covariance matrix of DESI galaxy power spectrum multipoles",
+  note   = "(in prep.)",
+  year   = "2024"
+}
+
+@article{Wadekar:2019rdu,
+    author = "Wadekar, Digvijay and Scoccimarro, Roman",
+    title = "{Galaxy power spectrum multipoles covariance in perturbation theory}",
+    eprint = "1910.02914",
+    archivePrefix = "arXiv",
+    primaryClass = "astro-ph.CO",
+    doi = "10.1103/PhysRevD.102.123517",
+    journal = "Phys. Rev. D",
+    volume = "102",
+    number = "12",
+    pages = "123517",
+    year = "2020"
+}
+```
