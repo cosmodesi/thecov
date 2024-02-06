@@ -15,7 +15,6 @@ from abc import ABC
 import itertools as itt
 import multiprocessing as mp
 import logging
-import warnings
 
 import numpy as np
 from scipy import fft
@@ -331,7 +330,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         for name in ['WEIGHT', 'WEIGHT_FKP']:
             if name not in self._randoms: self._randoms[name] = np.ones(self._randoms.size, dtype='f8')
         if 'NZ' not in self._randoms:
-            warnings.warn('NZ column not found in randoms. Estimating it with RedshiftDensityInterpolator.')
+            self.logger.warning('NZ column not found in randoms. Estimating it with RedshiftDensityInterpolator.')
             from mockfactory import RedshiftDensityInterpolator
             import healpy as hp
             nside = 512
@@ -359,7 +358,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self.logger.info(f'Nyquist wavelength of window FFTs = {knyquist}.')
 
         if knyquist < kmax_mask:
-            warnings.warn(f'Nyquist frequency {knyquist} smaller than required kmax_mask = {kmax_mask}.')
+            self.logger.warning(f'Nyquist frequency {knyquist} smaller than required kmax_mask = {kmax_mask}.')
 
         self.logger.info(f'Average of {self._mesh.data_size / self.nmesh**3} objects per voxel.')
 
@@ -617,7 +616,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                 self.load_attributes(self.resume_file, ['WinKernel'])
                 self.logger.warning(f'Loaded resume file {self.resume_file}.')
             except FileNotFoundError:
-                self.logger.warning(f'File {self.resume_file} not found. Creating resume file.')
+                self.logger.info(f'File {self.resume_file} not found. Creating resume file.')
                 utils.mkdir(os.path.dirname(self.resume_file))
                 self.save_attributes(self.resume_file, ['WinKernel'])
 
