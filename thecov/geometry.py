@@ -17,11 +17,9 @@ import multiprocessing as mp
 import logging
 
 import numpy as np
-from scipy import fft
 
 from tqdm import tqdm as shell_tqdm
 
-import os
 from . import base, utils
 
 __all__ = ['BoxGeometry', 'SurveyGeometry']
@@ -611,6 +609,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self.WinKernel = np.empty([self.kbins, 2*self.delta_k_max+1, 15, 6])
         self.WinKernel.fill(np.nan)
 
+        self.WinKernel_error = np.empty([self.kbins, 2*self.delta_k_max+1, 15, 6])
+        self.WinKernel_error.fill(np.nan)
+
         if self.resume_file is not None:
             try:
                 self.load_attributes(self.resume_file, ['WinKernel'])
@@ -638,7 +639,15 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                          initializer=init_worker,
                          initargs=[*[self._W[w] for w in W_LABELS], init_params]) as pool:
                 
-                self.WinKernel[i] = np.sum(pool.map(self._compute_window_kernel_row, chunks), axis=0) / kmodes_sampled
+                results = pool.map(self._compute_window_kernel_row, chunks)
+
+                self.WinKernel[i] = np.sum(results, axis=0) / kmodes_sampled
+
+                std_results = np.std(results, axis=0) / np.sqrt(len(results))
+                mean_results = np.mean(results, axis=0)
+                mean_results[std_results == 0] = 1
+                self.WinKernel_error[i] =  std_results / mean_results
+
         
                 for k2_bin_index in range(0, 2*self.delta_k_max + 1):
                     if (k2_bin_index + i - self.delta_k_max >= self.kbins or k2_bin_index + i - self.delta_k_max < 0):
@@ -990,7 +999,10 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                                        'dk',
                                        'kmax',
                                        'kmin',
-                                       'WinKernel'])
+                                       'WinKernel',
+                                       'WinKernel_error',
+                                       '_I',
+                                       ])
 
     def load_window_kernels(self, filename):
         '''Load the window kernels from a file.
