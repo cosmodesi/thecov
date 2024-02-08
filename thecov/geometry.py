@@ -584,7 +584,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                                              k_shell_approx=0.1)
 
         assert len(kmodes) == self.kbins and len(Nmodes) == self.kbins, \
-            f'Error in thecov.utils.sample_kmodes: results should have length {self.kbins}.'
+            f'Error in thecov.utils.sample_kmodes: results should have length {self.kbins}, but had {len(kmodes)}. Parameters were kmin={self.kmin},kmax={self.kmax},dk={self.dk},boxsize={self.boxsize},max_modes={self.kmodes_sampled},k_shell_approx={0.1}).'
 
         self.compute_cartesian_fft('W12')
         self.compute_cartesian_fft('W22')
@@ -614,12 +614,12 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         if self.resume_file is not None:
             try:
-                self.load_attributes(self.resume_file, ['WinKernel'])
+                self.load_attributes(self.resume_file, ['WinKernel', 'WinKernel_error'])
                 self.logger.warning(f'Loaded resume file {self.resume_file}.')
             except FileNotFoundError:
                 self.logger.info(f'File {self.resume_file} not found. Creating resume file.')
                 utils.mkdir(os.path.dirname(self.resume_file))
-                self.save_attributes(self.resume_file, ['WinKernel'])
+                self.save_attributes(self.resume_file, ['WinKernel', 'WinKernel_error'])
 
         for i, km in self.tqdm(enumerate(kmodes), desc='Computing window kernels', total=self.kbins):
 
@@ -656,7 +656,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                         self.WinKernel[i, k2_bin_index, :, :] /= Nmodes[i + k2_bin_index - self.delta_k_max]
 
             if self.resume_file is not None:
-                self.save_attributes(self.resume_file, ['WinKernel'])
+                self.save_attributes(self.resume_file, ['WinKernel', 'WinKernel_error'])
 
         ell_factor = lambda l1,l2: (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
             
