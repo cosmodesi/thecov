@@ -180,66 +180,146 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
             Covariance matrix.
         '''
 
+        func = lambda ik,jk:                 self._get_pk_pk_term(ik, jk) + \
+                    (1 + self.alphabar)    * self._get_pk_shotnoise_term(ik, jk) + \
+                    (1 + self.alphabar)**2 * self._get_shotnoise_shotnoise_term(ik, jk)
+
+        self._set_survey_covariance(self._build_covariance_survey(func), self)
+
+        if (self.eigvals < 0).any():
+            self.logger.warning('Covariance matrix is not positive definite.')
+
+        if not np.allclose(self.cov, self.cov.T):
+            self.logger.warning('Covariance matrix is not symmetric.')
+
+        return self
+    
+    def _build_covariance_survey(self, func=None):
+
         # If kbins are set for the covariance matrix but not for the geometry,
         # set them for the geometry as well
         if self.is_kbins_set and not self.geometry.is_kbins_set:
             self.geometry.set_kbins(self.kmin, self.kmax, self.dk)
 
+        cov = np.zeros((self.kbins, self.kbins, 6))
+
+        for ki in range(self.kbins):
+            # Iterate delta_k_max bins either side of the diagonal
+            for kj in range(max(ki - self.geometry.delta_k_max, 0), min(ki + self.geometry.delta_k_max + 1, self.kbins)):
+                cov[ki][kj] = func(ki, kj)
+
+        return cov
+    
+    @staticmethod
+    def _set_survey_covariance(cov_array, covariance=None):
+        if covariance is None:
+            covariance = base.MultipoleFourierCovariance()
+
+        covariance.set_ell_cov(0, 0, cov_array[:, :, 0])
+        covariance.set_ell_cov(2, 2, cov_array[:, :, 1])
+        covariance.set_ell_cov(4, 4, cov_array[:, :, 2])
+        covariance.set_ell_cov(0, 2, cov_array[:, :, 3])
+        covariance.set_ell_cov(0, 4, cov_array[:, :, 4])
+        covariance.set_ell_cov(2, 4, cov_array[:, :, 5])
+
+        return covariance
+
+    def _get_pk_pk_term(self, ik, jk):
+        
         WinKernel = self.geometry.get_window_kernels()
 
         # delta_k_max off-diagonal elements of the covariance
         # matrix will be computed each side of the diagonal
-        delta_k_max = WinKernel.shape[1]//2
+        delta_k = jk - ik + self.geometry.delta_k_max
 
-        # Number of k bins
-        kbins = self.kbins
-
-        # If the power spectrum for a given ell is not set, use a zero array instead
         P0 = self.get_pk(0, force_return=True, remove_shotnoise=True)
         P2 = self.get_pk(2, force_return=True)
         P4 = self.get_pk(4, force_return=True)
+        
+        return \
+            WinKernel[ik, delta_k, 0]*P0[ik]*P0[jk] + \
+            WinKernel[ik, delta_k, 1]*P0[ik]*P2[jk] + \
+            WinKernel[ik, delta_k, 2]*P0[ik]*P4[jk] + \
+            WinKernel[ik, delta_k, 3]*P2[ik]*P0[jk] + \
+            WinKernel[ik, delta_k, 4]*P2[ik]*P2[jk] + \
+            WinKernel[ik, delta_k, 5]*P2[ik]*P4[jk] + \
+            WinKernel[ik, delta_k, 6]*P4[ik]*P0[jk] + \
+            WinKernel[ik, delta_k, 7]*P4[ik]*P2[jk] + \
+            WinKernel[ik, delta_k, 8]*P4[ik]*P4[jk]
 
-        cov = np.zeros((kbins, kbins, 6))
+    def _get_pk_shotnoise_term(self, ik, jk):
+        
+        WinKernel = self.geometry.get_window_kernels()
 
-        for ki in range(kbins):
-            # Iterate delta_k_max bins either side of the diagonal
-            for kj in range(max(ki - delta_k_max, 0), min(ki + delta_k_max + 1, kbins)):
-                # Relative index of k2 for WinKernel elements
-                delta_k = kj - ki + delta_k_max
+        # delta_k_max off-diagonal elements of the covariance
+        # matrix will be computed each side of the diagonal
+        delta_k = jk - ik + self.geometry.delta_k_max
 
-                cov[ki][kj] = \
-                    WinKernel[ki, delta_k, 0]*P0[ki]*P0[kj] + \
-                    WinKernel[ki, delta_k, 1]*P0[ki]*P2[kj] + \
-                    WinKernel[ki, delta_k, 2]*P0[ki]*P4[kj] + \
-                    WinKernel[ki, delta_k, 3]*P2[ki]*P0[kj] + \
-                    WinKernel[ki, delta_k, 4]*P2[ki]*P2[kj] + \
-                    WinKernel[ki, delta_k, 5]*P2[ki]*P4[kj] + \
-                    WinKernel[ki, delta_k, 6]*P4[ki]*P0[kj] + \
-                    WinKernel[ki, delta_k, 7]*P4[ki]*P2[kj] + \
-                    WinKernel[ki, delta_k, 8]*P4[ki]*P4[kj] + \
-                    (1 + self.alphabar)*(
-                        WinKernel[ki, delta_k, 9]*(P0[ki] + P0[kj])/2. +
-                        WinKernel[ki, delta_k, 10]*P2[ki] + WinKernel[ki, delta_k, 11]*P4[ki] +
-                        WinKernel[ki, delta_k, 12]*P2[kj] +
-                    WinKernel[ki, delta_k, 13]*P4[kj]
-                ) + \
-                    (1 + self.alphabar)**2 * WinKernel[ki, delta_k, 14]
+        P0 = self.get_pk(0, force_return=True, remove_shotnoise=True)
+        P2 = self.get_pk(2, force_return=True)
+        P4 = self.get_pk(4, force_return=True)
+        
+        return  WinKernel[ik, delta_k, 9]*(P0[ik] + P0[jk])/2. + \
+                WinKernel[ik, delta_k, 10]*P2[ik] + WinKernel[ik, delta_k, 11]*P4[ik] + \
+                WinKernel[ik, delta_k, 12]*P2[jk] + \
+                WinKernel[ik, delta_k, 13]*P4[jk]
+    
+    def _get_shotnoise_shotnoise_term(self, ik, jk):
+        
+        WinKernel = self.geometry.get_window_kernels()
 
-        self.set_ell_cov(0, 0, cov[:, :, 0])
-        self.set_ell_cov(2, 2, cov[:, :, 1])
-        self.set_ell_cov(4, 4, cov[:, :, 2])
-        self.set_ell_cov(0, 2, cov[:, :, 3])
-        self.set_ell_cov(0, 4, cov[:, :, 4])
-        self.set_ell_cov(2, 4, cov[:, :, 5])
+        # delta_k_max off-diagonal elements of the covariance
+        # matrix will be computed each side of the diagonal
+        delta_k = jk - ik + self.geometry.delta_k_max
+        
+        return WinKernel[ik, delta_k, 14]
+    
+    def rescale_shotnoise(self, ref_cov, set=True):
+        original_alphabar = self.geometry.alpha
+        set_alphabar = self.alphabar
 
-        if (self.eigvals < 0).any():
-            warnings.warn('Covariance matrix is not positive definite.')
+        original_shotnoise = (1 + original_alphabar) * self.geometry.I('12')/self.geometry.I('22')
+        set_shotnoise =      (1 +      set_alphabar) * self.geometry.I('12')/self.geometry.I('22')
 
-        if not np.allclose(self.cov, self.cov.T):
-            warnings.warn('Covariance matrix is not symmetric.')
+        from scipy.optimize import minimize
+        result = minimize(self._get_shotnoise_rescaling_func(ref_cov), self.alphabar, tol=1e-4)
 
-        return self
+        new_alphabar = result.x[0]
+        new_shotnoise = (1 + new_alphabar) * self.geometry.I('12')/self.geometry.I('22')
 
+        self.logger.info(f'alphabar rescaling: {original_alphabar} -> {set_alphabar} -> {new_alphabar}')
+        self.logger.info(f'shotnoise rescaling: {original_shotnoise} -> {set_shotnoise} -> {new_shotnoise}')
+        self.logger.info(f'ratio: {new_shotnoise/set_shotnoise}')
+
+        if set:
+            self.alphabar = new_alphabar
+
+        return new_alphabar, new_shotnoise
+
+    def _get_shotnoise_rescaling_func(self, ref_cov):
+
+        def get_covariance(alphabar):
+            cov_func = lambda ik,jk:        self._get_pk_pk_term(ik, jk) + \
+                        (1 + alphabar)    * self._get_pk_shotnoise_term(ik, jk) + \
+                        (1 + alphabar)**2 * self._get_shotnoise_shotnoise_term(ik, jk)
+
+            return self._build_covariance_survey(cov_func)
+
+        get_dcov_dalphabar = lambda alphabar: \
+                               self._build_covariance_survey(self._get_pk_shotnoise_term) + \
+            2*(1 + alphabar) * self._build_covariance_survey(self._get_shotnoise_shotnoise_term)
+        
+        @np.vectorize
+        def likelihood(alphabar):
+            covariance = self._set_survey_covariance(get_covariance(alphabar)).cov
+            precision_matrix = np.linalg.inv(covariance)
+            dcov_dalphabar = self._set_survey_covariance(get_dcov_dalphabar(alphabar)).cov
+
+            return np.abs(np.trace((ref_cov.cov - covariance) @ precision_matrix @ dcov_dalphabar @ precision_matrix))
+        
+        return likelihood
+        
+        
     def load_pk(self, filename, remove_shotnoise=None, set_shotnoise=True):
         '''Load power spectrum from pypower file and set it to be used for the covariance calculation.
 
