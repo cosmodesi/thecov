@@ -239,8 +239,8 @@ def plot_cov(cov, label=None, kmax=None, num_ticks=5, plot_sizes={}, **kwargs):
     import itertools as itt
     from . import base
 
-    matplotlib.rc('font', family='STIXGeneral')
-    matplotlib.rc('text', usetex=True)
+    # matplotlib.rc('font', family='STIXGeneral')
+    # matplotlib.rc('text', usetex=True)
     matplotlib.rcParams['figure.dpi']= 150
     matplotlib.rcParams['figure.facecolor']= 'white'
 
