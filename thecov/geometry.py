@@ -41,6 +41,7 @@ class Geometry(ABC):
             if attrs is None:
                 attrs = data.files
             for a in attrs:
+                self.logger.debug(f'Loading {a} from {filename}.')
                 setattr(self, a, data[a])
 
 
