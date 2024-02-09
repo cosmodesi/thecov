@@ -365,8 +365,9 @@ class MultipoleCovariance(Covariance):
             the first multipole.
         l2
             the second multipole.
-        force_return, boolean, optional
-            `force_return` if True, returns a zero matrix if the covariance matrix is not defined.
+        force_return, boolean, float, optional
+            If True, returns a zero matrix if the covariance matrix is not defined.
+            If `force_return` is a float, returns a matrix with the given value.
 
         Returns
         -------
@@ -379,6 +380,8 @@ class MultipoleCovariance(Covariance):
 
         if (l1, l2) in self._multipole_covariance:
             return self._multipole_covariance[l1, l2]
+        elif type(force_return) != bool:
+            return cls(force_return*np.ones(self._mshape))
         elif force_return:
             return cls(np.zeros(self._mshape))
 

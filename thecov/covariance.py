@@ -33,10 +33,10 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
     geometry : geometry.Geometry
         Geometry of the survey. Can be a BoxGeometry or a SurveyGeometry object.
     '''
-    logger = logging.getLogger('GaussianCovariance')
 
     def __init__(self, geometry=None):
         base.MultipoleFourierCovariance.__init__(self)
+        self.logger = logging.getLogger('GaussianCovariance')
 
         self.geometry = geometry
 
@@ -104,8 +104,10 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
         ----------
         ell : int
             Multipole of the power spectrum.
-        force_return : bool, optional
-            Whether to return a zero array if the power spectrum is not set.
+
+        force_return : bool, float, optional
+            If the power spectrum for the given ell is not set, return a zero array if True or the specified value if a float.
+            
         remove_shotnoise : bool, optional
             Whether to remove the shotnoise from the power spectrum monopole.
         '''
@@ -116,6 +118,8 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
                 self.logger.info(f'Adding shotnoise = {self.shotnoise} to ell = 0.')
                 return pk + self.shotnoise
             return pk
+        elif type(force_return) != bool:
+            return force_return*np.ones(self.kbins)
         elif force_return:
             return np.zeros(self.kbins)
 
@@ -167,7 +171,7 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
             self.set_ell_cov(l1, l2, 2/self.nmodes * np.diag(cov[l1, l2]))
 
         if (self.eigvals < 0).any():
-            warnings.warn('Covariance matrix is not positive definite.')
+            self.logger.warning('Covariance matrix is not positive definite.')
 
         return self
 
