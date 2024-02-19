@@ -285,10 +285,10 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
         original_shotnoise = (1 + original_alphabar) * self.geometry.I('12')/self.geometry.I('22')
         set_shotnoise =      (1 +      set_alphabar) * self.geometry.I('12')/self.geometry.I('22')
 
-        from scipy.optimize import minimize
-        result = minimize(self._get_shotnoise_rescaling_func(ref_cov), self.alphabar, tol=1e-4)
+        from scipy.optimize import root_scalar
+        result = root_scalar(self._get_shotnoise_rescaling_func(ref_cov), x0=0., x1=0.001)
 
-        new_alphabar = result.x[0]
+        new_alphabar = result.root
         new_shotnoise = (1 + new_alphabar) * self.geometry.I('12')/self.geometry.I('22')
 
         self.logger.info(f'alphabar rescaling: {original_alphabar} -> {set_alphabar} -> {new_alphabar}')
@@ -314,14 +314,14 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
             2*(1 + alphabar) * self._build_covariance_survey(self._get_shotnoise_shotnoise_term)
         
         @np.vectorize
-        def likelihood(alphabar):
+        def dlikelihood(alphabar):
             covariance = self._set_survey_covariance(get_covariance(alphabar)).cov
             precision_matrix = np.linalg.inv(covariance)
             dcov_dalphabar = self._set_survey_covariance(get_dcov_dalphabar(alphabar)).cov
 
-            return np.abs(np.trace((ref_cov.cov - covariance) @ precision_matrix @ dcov_dalphabar @ precision_matrix))
+            return np.trace((ref_cov.cov - covariance) @ precision_matrix @ dcov_dalphabar @ precision_matrix)
         
-        return likelihood
+        return dlikelihood
         
         
     def load_pk(self, filename, remove_shotnoise=None, set_shotnoise=True):
