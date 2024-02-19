@@ -198,7 +198,7 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
 
         return self
     
-    def _build_covariance_survey(self, func=None):
+    def _build_covariance_survey(self, func):
 
         # If kbins are set for the covariance matrix but not for the geometry,
         # set them for the geometry as well

@@ -298,13 +298,13 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     ----------
     .. [1] https://arxiv.org/abs/1910.02914
     '''
-    logger = logging.getLogger('SurveyGeometry')
 
     def __init__(self, randoms, nmesh=None, cellsize=None, boxsize=None, boxpad=1.2, kmax_mask=0.04, delta_k_max=10, kmodes_sampled=10000, alpha=1.0, nthreads=None, resume_file=None, tqdm=shell_tqdm, **kwargs):
 
         base.FourierBinned.__init__(self)
 
         self.resume_file = resume_file
+        self.logger = logging.getLogger('SurveyGeometry')
 
         self.alpha = alpha
         self.delta_k_max = delta_k_max
