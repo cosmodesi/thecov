@@ -33,16 +33,19 @@ class Geometry(ABC):
 
     def save_attributes(self, filename, attrs):
         utils.mkdir(os.path.dirname(filename))
-        np.savez(filename if filename.strip()
-                 [-4:] == '.npz' else f'{filename}.npz', **{a: getattr(self, a) for a in attrs})
+
+        attr_dict = {a: getattr(self, a) for a in attrs if np.any(getattr(self, a) is not None) and np.any(getattr(self, a) != {})}
+
+        np.savez(filename if filename.strip()[-4:] == '.npz' else f'{filename}.npz',
+                 **attr_dict)
 
     def load_attributes(self, filename, attrs=None):
-        with np.load(filename, mmap_mode='r') as data:
+        with np.load(filename, mmap_mode='r', allow_pickle=True) as data:
             if attrs is None:
                 attrs = data.files
             for a in attrs:
                 self.logger.debug(f'Loading {a} from {filename}.')
-                setattr(self, a, data[a])
+                setattr(self, a, data[a].flat[0] if len(data[a].flat) == 1 else data[a])
 
 
 
@@ -285,9 +288,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         Set the k bins to be used in the calculation of the covariance.
     compute_window_kernels
         Compute the window kernels to be used in the calculation of the covariance.
-    save_window_kernels(filename)
+    save_resume_file(filename)
         Save the window kernels to a file.
-    load_window_kernels(filename)
+    load_resume_file(filename)
         Load the window kernels from a file.
 
     Notes
@@ -303,7 +306,6 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         base.FourierBinned.__init__(self)
 
-        self.resume_file = resume_file
         self.logger = logging.getLogger('SurveyGeometry')
 
         self.alpha = alpha
@@ -321,6 +323,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         self._W = {}
         self._I = {}
+        self._ikgrid = None
 
         from mockfactory import Catalog
         from pypower import CatalogMesh
@@ -361,6 +364,14 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         self.logger.info(f'Average of {self._mesh.data_size / self.nmesh**3} objects per voxel.')
 
+        self.WinKernel = None
+        self.WinKernel_error = None
+
+        if resume_file is not None:
+            self.set_resume_file(resume_file)
+        else:
+            self._resume_file = None
+
 
     def W_cat(self, W):
         '''Adds a column to the random catalog with the window function Wij.
@@ -399,7 +410,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         w = W.lower().replace("i", "").replace("w", "")
         if w not in self._I:
             self.W_cat(w)
-            self._I[w] = self._randoms[f'W{w}'].sum() * self.alpha
+            self._I[w] = (self._randoms[f'W{w}'].sum() * self.alpha).tolist()
 
         return self._I[w]
 
@@ -478,6 +489,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
                 pbar.update(1)
 
+        if self._resume_file is not None:
+            self.save_resume_file(self._resume_file, window_kernels=False)
+
     def set_cartesian_fft(self, label, W):
         '''Set the FFT of the window function Wij.
 
@@ -489,41 +503,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             FFT of the window function Wij.
         '''
         w = label.lower().replace('w', '')
-        if w not in self._W:
-            # Create object proper for multiprocessing
-            self._W[w] = np.frombuffer(mp.RawArray('d', 2 * int(self.nmesh)**3)).view(np.complex128).reshape(self.nmesh, self.nmesh, self.nmesh)
-        self._W[w][:, :, :] = W
-
-    def save_cartesian_ffts(self, filename):
-        '''Save the FFTs of the window functions Wij to a file.
-
-        Parameters
-        ----------
-        filename : str
-            Name of the file to save the FFTs of the window functions Wij.
-        '''
-        utils.mkdir(os.path.dirname(filename))
-        np.savez(filename if filename.endswith('.npz') else f'{filename}.npz', **{f'W{k.replace("W", "")}': self._W[k] for k in self._W}, **{
-                 f'I{k.replace("I", "")}': self._I[k] for k in self._I}, **{name: getattr(self, name) for name in ['boxsize', 'nmesh', 'alpha']})
-
-    def load_cartesian_ffts(self, filename):
-        '''Load the FFTs of the window functions Wij from a file.
-
-        Parameters
-        ----------
-        filename : str
-            Name of the file to load the FFTs of the window functions Wij from.
-        '''
-        with np.load(filename, mmap_mode='r') as data:
-
-            for name in ['boxsize', 'nmesh', 'alpha']:
-                setattr(self, name, data[name])
-
-            for f in data.files:
-                if f[0] == 'W':
-                    self.set_cartesian_fft(f, data[f])
-                elif f[0] == 'I':
-                    self._I[f[1:]] = data[f]
+        # Create object proper for multiprocessing
+        self._W[w] = np.frombuffer(mp.RawArray('d', 2 * int(self.nmesh)**3)).view(np.complex128).reshape(self.nmesh, self.nmesh, self.nmesh)
+        self._W[w][...] = W
 
     @property
     def randoms(self):
@@ -549,7 +531,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         array_like
             Window kernels to be used in the calculation of the covariance.
         '''
-        if not (hasattr(self, 'WinKernel') and self.WinKernel is not None):
+        if self.WinKernel is None or np.isnan(self.WinKernel).any():
             self.compute_window_kernels()
         return self.WinKernel
 
@@ -587,8 +569,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         assert len(kmodes) == self.kbins and len(Nmodes) == self.kbins, \
             f'Error in thecov.utils.sample_kmodes: results should have length {self.kbins}, but had {len(kmodes)}. Parameters were kmin={self.kmin},kmax={self.kmax},dk={self.dk},boxsize={self.boxsize},max_modes={self.kmodes_sampled},k_shell_approx={0.1}).'
 
-        self.compute_cartesian_fft('W12')
-        self.compute_cartesian_fft('W22')
+        # Calculate window FFTs if they haven't been initialized yet
+        self.W('W12')
+        self.W('W22')
 
         init_params = {
             'boxsize': self.boxsize,
@@ -606,25 +589,19 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                 shared_w[l] = np.frombuffer(w).view(np.complex128).reshape(self.nmesh, self.nmesh, self.nmesh)
             shared_params = args[-1]
 
-        # Format is [k1_bins, k2_bins, P_i x P_j term, Cov_ij]
-        self.WinKernel = np.empty([self.kbins, 2*self.delta_k_max+1, 15, 6])
-        self.WinKernel.fill(np.nan)
+        if self.WinKernel is None and self.WinKernel_error is None:
+            # Format is [k1_bins, k2_bins, P_i x P_j term, Cov_ij]
+            self.WinKernel = np.empty([self.kbins, 2*self.delta_k_max+1, 15, 6])
+            self.WinKernel.fill(np.nan)
 
-        self.WinKernel_error = np.empty([self.kbins, 2*self.delta_k_max+1, 15, 6])
-        self.WinKernel_error.fill(np.nan)
+            self.WinKernel_error = np.empty([self.kbins, 2*self.delta_k_max+1, 15, 6])
+            self.WinKernel_error.fill(np.nan)
 
-        if self.resume_file is not None:
-            try:
-                self.load_attributes(self.resume_file, ['WinKernel', 'WinKernel_error'])
-                self.logger.warning(f'Loaded resume file {self.resume_file}.')
-            except FileNotFoundError:
-                self.logger.info(f'File {self.resume_file} not found. Creating resume file.')
-                utils.mkdir(os.path.dirname(self.resume_file))
-                self.save_attributes(self.resume_file, ['WinKernel', 'WinKernel_error'])
+        ell_factor = lambda l1,l2: (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
 
         for i, km in self.tqdm(enumerate(kmodes), desc='Computing window kernels', total=self.kbins):
 
-            if self.resume_file is not None:
+            if self._resume_file is not None:
                 # Skip rows that were already computed
                 if not np.isnan(self.WinKernel[i,0,0,0]):
                     # self.logger.debug(f'Skipping bin {i} of {self.kbins}.')
@@ -648,7 +625,6 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                 mean_results = np.mean(results, axis=0)
                 mean_results[std_results == 0] = 1
                 self.WinKernel_error[i] =  std_results / mean_results
-
         
                 for k2_bin_index in range(0, 2*self.delta_k_max + 1):
                     if (k2_bin_index + i - self.delta_k_max >= self.kbins or k2_bin_index + i - self.delta_k_max < 0):
@@ -656,19 +632,17 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                     else:
                         self.WinKernel[i, k2_bin_index, :, :] /= Nmodes[i + k2_bin_index - self.delta_k_max]
 
-            if self.resume_file is not None:
-                self.save_attributes(self.resume_file, ['WinKernel', 'WinKernel_error'])
+            self.WinKernel[i, ..., 0] *= ell_factor(0,0)
+            self.WinKernel[i, ..., 1] *= ell_factor(2,2)
+            self.WinKernel[i, ..., 2] *= ell_factor(4,4)
+            self.WinKernel[i, ..., 3] *= ell_factor(2,0)
+            self.WinKernel[i, ..., 4] *= ell_factor(4,0)
+            self.WinKernel[i, ..., 5] *= ell_factor(4,2)
 
-        ell_factor = lambda l1,l2: (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
+            self.WinKernel[i, ...] /= self.I('22')**2
             
-        self.WinKernel[:, :, :, 0] *= ell_factor(0,0)
-        self.WinKernel[:, :, :, 1] *= ell_factor(2,2)
-        self.WinKernel[:, :, :, 2] *= ell_factor(4,4)
-        self.WinKernel[:, :, :, 3] *= ell_factor(2,0)
-        self.WinKernel[:, :, :, 4] *= ell_factor(4,0)
-        self.WinKernel[:, :, :, 5] *= ell_factor(4,2)
-
-        self.WinKernel /= self.I('22')**2
+            if self._resume_file is not None:
+                self.save_resume_file(self._resume_file)
                 
         self.logger.info('Window kernels computed.')
 
@@ -983,29 +957,44 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         
         return WinKernel
     
-    def save_window_kernels(self, filename):
+    def save_resume_file(self, filename, window_kernels=True, cartesian_ffts=True):
         '''Save the window kernels to a file.
 
         Parameters
         ----------
         filename : str
             Name of the file to save the window kernels.'''
-        self.save_attributes(filename, ['alpha',
-                                       'delta_k_max',
-                                       'kmodes_sampled',
-                                       'shotnoise',
-                                       'ngals',
-                                       'boxsize',
-                                       'nmesh',
-                                       'dk',
-                                       'kmax',
-                                       'kmin',
-                                       'WinKernel',
-                                       'WinKernel_error',
-                                       '_I',
-                                       ])
+        # self.logger.debug(f'Saving window kernels to {filename}.')
 
-    def load_window_kernels(self, filename):
+        attrs = [
+            'alpha',
+            'delta_k_max',
+            'kmodes_sampled',
+            'shotnoise',
+            'ngals',
+            'boxsize',
+            'nmesh',
+            'dk',
+            'kmax',
+            'kmin',
+        ]
+        
+        if cartesian_ffts:
+            attrs += [
+                '_I',
+                '_W',
+                '_ikgrid',
+            ]
+
+        if window_kernels:
+            attrs += [
+                'WinKernel',
+                'WinKernel_error',
+            ]
+        
+        self.save_attributes(filename, attrs)
+
+    def load_resume_file(self, filename):
         '''Load the window kernels from a file.
 
         Parameters
@@ -1013,7 +1002,30 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         filename : str
             Name of the file to load the window kernels from.
         '''
+        self.logger.info(f'Loading window kernels from {filename}.')
         self.load_attributes(filename)
+        # Cartesian FFTs need to be loaded through the setter
+        for key in self._W:
+            self.set_cartesian_fft(key, self._W[key])
+
+    def set_resume_file(self, filename):
+        '''Set the resume file for the window kernels.
+
+        Parameters
+        ----------
+        filename : str
+            Name of the file to save the window kernels.
+        '''
+        self._resume_file = filename
+
+        if self._resume_file is not None:
+            try:
+                self.load_resume_file(self._resume_file)
+                self.logger.warning(f'Loaded resume file {self._resume_file}. This might override your settings. See debug messages for more details on the loaded attributes.')
+            except FileNotFoundError:
+                self.logger.info(f'File {self._resume_file} not found. Creating resume file.')
+                utils.mkdir(os.path.dirname(self._resume_file))
+                self.save_resume_file(self._resume_file, window_kernels=False, cartesian_ffts=False)
 
     @classmethod
     def from_window_kernels_file(cls, filename):
@@ -1025,7 +1037,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             Name of the file to load the window kernels from.
         '''
         geometry = cls.__new__(cls)
-        geometry.load_window_kernels(filename)
+        geometry.load_resume_file(filename)
         return geometry
     
     @property
