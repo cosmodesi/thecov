@@ -16,7 +16,6 @@ Example
 """
 
 import logging
-import warnings
 import itertools as itt
 
 import numpy as np
@@ -25,7 +24,7 @@ from . import base, geometry
 
 __all__ = ['GaussianCovariance']
 
-class GaussianCovariance(base.MultipoleFourierCovariance):
+class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
     '''Gaussian covariance matrix of power spectrum multipoles in a given geometry.
 
     Attributes
@@ -35,111 +34,8 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
     '''
 
     def __init__(self, geometry=None):
-        base.MultipoleFourierCovariance.__init__(self)
+        base.PowerSpectrumMultipolesCovariance.__init__(self, geometry=geometry)
         self.logger = logging.getLogger('GaussianCovariance')
-
-        self.geometry = geometry
-
-        self._pk = {}
-        self.alphabar = None
-        # alphabar is used to scale the shotnoise contributions to the covariance with (1 + alphabar) factors
-        if hasattr(geometry, 'alpha'):
-            self.alphabar = geometry.alpha
-
-    @property
-    def shotnoise(self):
-        '''Shotnoise of the sample.
-
-        Returns
-        -------
-        float
-            Shotnoise value.'''
-        
-        if isinstance(geometry, geometry.SurveyGeometry):
-            return (1 + self.alphabar) * self.geometry.I('12')/self.geometry.I('22')
-        else:
-            return self.geometry.shotnoise
-
-    def set_shotnoise(self, shotnoise):
-        '''Set shotnoise to specified value. Also scales alphabar so that (1 + alphabar)*I12/I22
-        matches the specified shotnoise.
-
-        Parameters
-        ----------
-        shotnoise : float
-            shotnoise = (1 + alpha)*I12/I22.
-        '''
-
-        self.logger.info(f'Estimated shotnoise was {self.shotnoise}')
-        self.logger.info(f'Setting shotnoise to {shotnoise}.')
-        # self.geometry.shotnoise = shotnoise
-        self.alphabar = shotnoise * self.geometry.I('22') / self.geometry.I('12') - 1
-        self.logger.info(f'Setting alphabar to {self.alphabar} based on given shotnoise value.')
-
-    def set_pk(self, pk, ell, has_shotnoise=False):
-        '''Set the input power spectrum to be used for the covariance calculation.
-
-        Parameters
-        ----------
-        pk : array_like
-            Power spectrum.
-        ell : int
-            Multipole of the power spectrum.
-        has_shotnoise : bool, optional
-            Whether the power spectrum has shotnoise included or not.
-        '''
-
-        assert len(pk) == self.kbins, 'Power spectrum must have the same number of bins as the covariance matrix.'
-
-        if ell == 0 and has_shotnoise:
-            self.logger.info(f'Removing shotnoise = {self.shotnoise} from ell = 0.')
-            self._pk[ell] = pk - self.shotnoise
-        else:
-            self._pk[ell] = pk
-
-    def get_pk(self, ell, force_return=False, remove_shotnoise=True):
-        '''Get the input power spectrum to be used for the covariance calculation.
-
-        Parameters
-        ----------
-        ell : int
-            Multipole of the power spectrum.
-
-        force_return : bool, float, optional
-            If the power spectrum for the given ell is not set, return a zero array if True or the specified value if a float.
-            
-        remove_shotnoise : bool, optional
-            Whether to remove the shotnoise from the power spectrum monopole.
-        '''
-
-        if ell in self._pk.keys():
-            pk = self._pk[ell]
-            if (not remove_shotnoise) and ell == 0:
-                self.logger.info(f'Adding shotnoise = {self.shotnoise} to ell = 0.')
-                return pk + self.shotnoise
-            return pk
-        elif type(force_return) != bool:
-            return force_return*np.ones(self.kbins)
-        elif force_return:
-            return np.zeros(self.kbins)
-
-    def compute_covariance(self, ells=(0, 2, 4)):
-        '''Compute the covariance matrix for the given geometry and power spectra.
-
-        Parameters
-        ----------
-        ells : tuple, optional
-            Multipoles of the power spectra to have the covariance calculated for.
-        '''
-
-        self._ells = ells
-        self._mshape = (self.kbins, self.kbins)
-
-        if isinstance(self.geometry, geometry.BoxGeometry):
-            return self._compute_covariance_box()
-
-        if isinstance(self.geometry, geometry.SurveyGeometry):
-            return self._compute_covariance_survey()
 
     def _compute_covariance_box(self):
         '''Compute the covariance matrix for a box geometry.
