@@ -21,15 +21,14 @@ pip install git+ssh://git@github.com/cosmodesi/thecov.git
 ### Gaussian covariance in cubic box geometry
 
 ```python
-import thecov.covariance
-import thecov.geometry
+from thecov import BoxGeometry, GaussianCovariance
 
-geometry = thecov.geometry.BoxGeometry(volume=2000**3, nbar=1e-3)
+geometry = BoxGeometry(volume=2000**3, nbar=1e-3)
 
-covariance = thecov.covariance.GaussianCovariance(geometry)
+covariance = GaussianCovariance(geometry)
 covariance.set_kbins(kmin=0, kmax=0.25, dk=0.005)
 
-# Load input power spectra (P0,P2,P4) for the Gaussian covariance
+# Load input power spectra (P0, P2, P4) for the Gaussian covariance
 
 covariance.set_pk(P0, 0, has_shotnoise=False)
 covariance.set_pk(P2, 2)
@@ -45,40 +44,38 @@ covariance.compute_covariance()
 
 ```python
 
-import thecov.covariance
-import thecov.geometry
+from cosmoprimo.fiducial import DESI
+from mockfactory import Catalog, utils
 
-# nbodykit is required to handle random catalogs
-from nbodykit.source.catalog import CSVCatalog
-from nbodykit.lab import cosmology, transform
+from thecov import SurveyGeometry, GaussianCovariance
 
-# Define cosmology used in nbodykit coordinate transformations
-cosmo = cosmology.Cosmology(h=0.7).match(Omega0_m=0.31)
+# Define cosmology used in coordinate transformations
+cosmo = DESI()
 
-# Load random catalog using nbodykit
-randoms = CSVCatalog(f'your_catalog.dat')
+# Load random catalog
+randoms = Catalog.read(f'your_catalog.fits')
 
 # Any catalog filtering/manipulations should go here
 
 # Should define FKP weights column with this name
-randoms['WEIGHT_FKP'] = 1./(1. + 1e4*randoms['NZ'])
+randoms['WEIGHT_FKP'] = 1./(1. + 1e4*randoms['NZ'])  # FKP weights are optional
 
 # Convert sky coordinates to cartesian
-randoms['Position'] = transform.SkyToCartesian(
-    randoms['RA'], randoms['DEC'], randoms['Z'], degrees=True, cosmo=cosmo)
+randoms['POSITION'] = utils.sky_to_cartesian(cosmo.comoving_radial_distance(randoms['Z']), randoms['RA'], randoms['DEC'], degree=Truee)
 
 # Create geometry object to be used in covariance calculation
-geometry = thecov.geometry.SurveyGeometry(random_catalog=randoms, Nmesh=31, BoxSize=3750, alpha=1/10)
+geometry = SurveyGeometry(randoms, nmesh=64, boxpad=1.2, alpha=1. / 10., kmodes_sampled=2000)
 
-covariance = thecov.covariance.GaussianCovariance(geometry)
-covariance.set_kbins(kmin=0, kmax=0.25, dk=0.005)
+covariance = GaussianCovariance(geometry)
+covariance.set_kbins(kmin=0, kmax=0.4, dk=0.005)
 
-# Load input power spectra (P0,P2,P4) for the Gaussian covariance
+# Load input power spectra (P0, P2, P4) for the Gaussian covariance
 
 covariance.set_pk(P0, 0, has_shotnoise=False)
 covariance.set_pk(P2, 2)
 covariance.set_pk(P4, 4)
 
+covariance.set_shotnoise(shotnoise) # optional but recommended
 
 covariance.compute_covariance()
 
