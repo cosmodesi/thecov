@@ -685,6 +685,13 @@ class FourierCovariance(Covariance, FourierBinned):
 
         return k1, k2
 
+    @property
+    def kmin_matrices(self):
+        k1 = np.einsum('i,j->ij', self.kedges[:-1], np.ones_like(self.kmid))
+        k2 = k1.T
+
+        return k1, k2
+
     def kcut(self, kmin=None, kmax=None):
         if kmin is None:
             kmin = self.kmin
@@ -858,53 +865,6 @@ class PowerSpectrumMultipolesCovariance(MultipoleFourierCovariance):
         # self.geometry.shotnoise = shotnoise
         self.alphabar = shotnoise * self.geometry.I('22') / self.geometry.I('12') - 1
         self.logger.info(f'Setting alphabar to {self.alphabar} based on given shotnoise value.')
-
-    def set_pk(self, pk, ell, has_shotnoise=False):
-        '''Set the input power spectrum to be used for the covariance calculation.
-
-        Parameters
-        ----------
-        pk : array_like
-            Power spectrum.
-        ell : int
-            Multipole of the power spectrum.
-        has_shotnoise : bool, optional
-            Whether the power spectrum has shotnoise included or not.
-        '''
-
-        assert len(pk) == self.kbins, 'Power spectrum must have the same number of bins as the covariance matrix.'
-
-        if ell == 0 and has_shotnoise:
-            self.logger.info(f'Removing shotnoise = {self.shotnoise} from ell = 0.')
-            self._pk[ell] = pk - self.shotnoise
-        else:
-            self._pk[ell] = pk
-
-    def get_pk(self, ell, force_return=False, remove_shotnoise=True):
-        '''Get the input power spectrum to be used for the covariance calculation.
-
-        Parameters
-        ----------
-        ell : int
-            Multipole of the power spectrum.
-
-        force_return : bool, float, optional
-            If the power spectrum for the given ell is not set, return a zero array if True or the specified value if a float.
-            
-        remove_shotnoise : bool, optional
-            Whether to remove the shotnoise from the power spectrum monopole.
-        '''
-
-        if ell in self._pk.keys():
-            pk = self._pk[ell]
-            if (not remove_shotnoise) and ell == 0:
-                self.logger.info(f'Adding shotnoise = {self.shotnoise} to ell = 0.')
-                return pk + self.shotnoise
-            return pk
-        elif type(force_return) != bool:
-            return force_return*np.ones(self.kbins)
-        elif force_return:
-            return np.zeros(self.kbins)
 
     def compute_covariance(self, ells=(0, 2, 4)):
         '''Compute the covariance matrix for the given geometry and power spectra.

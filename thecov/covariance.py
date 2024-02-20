@@ -37,6 +37,53 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         base.PowerSpectrumMultipolesCovariance.__init__(self, geometry=geometry)
         self.logger = logging.getLogger('GaussianCovariance')
 
+    def set_pk(self, pk, ell, has_shotnoise=False):
+        '''Set the input power spectrum to be used for the covariance calculation.
+
+        Parameters
+        ----------
+        pk : array_like
+            Power spectrum.
+        ell : int
+            Multipole of the power spectrum.
+        has_shotnoise : bool, optional
+            Whether the power spectrum has shotnoise included or not.
+        '''
+
+        assert len(pk) == self.kbins, 'Power spectrum must have the same number of bins as the covariance matrix.'
+
+        if ell == 0 and has_shotnoise:
+            self.logger.info(f'Removing shotnoise = {self.shotnoise} from ell = 0.')
+            self._pk[ell] = pk - self.shotnoise
+        else:
+            self._pk[ell] = pk
+
+    def get_pk(self, ell, force_return=False, remove_shotnoise=True):
+        '''Get the input power spectrum to be used for the covariance calculation.
+
+        Parameters
+        ----------
+        ell : int
+            Multipole of the power spectrum.
+
+        force_return : bool, float, optional
+            If the power spectrum for the given ell is not set, return a zero array if True or the specified value if a float.
+            
+        remove_shotnoise : bool, optional
+            Whether to remove the shotnoise from the power spectrum monopole.
+        '''
+
+        if ell in self._pk.keys():
+            pk = self._pk[ell]
+            if (not remove_shotnoise) and ell == 0:
+                self.logger.info(f'Adding shotnoise = {self.shotnoise} to ell = 0.')
+                return pk + self.shotnoise
+            return pk
+        elif type(force_return) != bool:
+            return force_return*np.ones(self.kbins)
+        elif force_return:
+            return np.zeros(self.kbins)
+
     def _compute_covariance_box(self):
         '''Compute the covariance matrix for a box geometry.
 
@@ -219,7 +266,6 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         
         return dlikelihood
         
-        
     def load_pk(self, filename, remove_shotnoise=None, set_shotnoise=True):
         '''Load power spectrum from pypower file and set it to be used for the covariance calculation.
 
@@ -284,3 +330,157 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         self.set_pk(P0, 0, has_shotnoise=not remove_shotnoise)
         self.set_pk(P2, 2)
         self.set_pk(P4, 4)
+
+class TrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
+    '''Regular trispectrum covariance matrix of power spectrum multipoles in a given geometry.
+
+    Attributes
+    ----------
+    geometry : geometry.Geometry
+        Geometry of the survey. Can be a BoxGeometry or a SurveyGeometry object.
+    '''
+
+    def __init__(self, geometry=None):
+
+        base.PowerSpectrumMultipolesCovariance.__init__(self, geometry=geometry)
+        self.logger = logging.getLogger('TrispectrumCovariance')
+
+        from powercovfft import PowerSpecCovFFT
+        self.calculator = PowerSpecCovFFT()
+
+    def set_kbins(self, kmin, kmax, dk):
+        '''Set the k-binning for the covariance matrix.
+
+        Parameters
+        ----------
+        kmin : float
+            Minimum k value.
+        kmax : float
+            Maximum k value.
+        dk : float
+            Width of the k bins.
+        '''
+
+        base.PowerSpectrumMultipolesCovariance.set_kbins(self, kmin, kmax, dk)
+
+        ## Set the FFTLog
+        config_fft = {'nu':-0.3, 'kmin':1e-5, 'kmax':1e+1, 'nmax':512}
+        self.calculator.set_power_law_decomp(config_fft)
+
+        k1, k2 = self.kmin_matrices
+
+        ## Precompute the master integrals
+        self.calculator.calc_master_integral(k1, k2)
+
+        return self
+    
+    def set_pk(self, pk_linear, k=None):
+        '''Set the input linear power spectrum to be used for the covariance calculation.
+
+        Parameters
+        ----------
+        k : array_like
+            Wavenumbers.
+        pk : array_like
+            Power spectrum.
+        '''
+
+        if callable(pk_linear):
+            self.pk_linear = pk_linear
+        else:
+            if len(k) != len(pk_linear):
+                self.logger.error('k and pk must have the same length.')
+
+            from scipy.interpolate import InterpolatedUnivariateSpline
+            pk_spline = InterpolatedUnivariateSpline(np.log(pk_linear[:,0]), np.log(pk_linear[:,1]))
+
+            self.pk_linear = lambda k: np.exp(pk_spline(np.log(k)))
+
+        self.calculator.set_pk_lin(self.pk_linear)
+    
+    def set_params(self, b1, b2, bG2, b3, bG3, bdG2, bGamma3, fgrowth):
+        '''Set the input parameters to be used for the covariance calculation.
+
+        Parameters
+        ----------
+        b1 : float
+            Linear bias.
+        b2 : float
+            Quadratic bias.
+        bG2 : float
+            Galaxy-matter cross-bias.
+        b3 : float
+            Cubic bias.
+        bG3 : float
+            Galaxy-matter cross-bias.
+        bdG2 : float
+            Galaxy-matter cross-bias.
+        bGamma3 : float
+            Galaxy-matter cross-bias.
+        fgrowth : float
+            Growth rate.
+        '''
+
+        self.calculator.bias = {
+            'b1':b1,
+            'b2':b2,
+            'bG2':bG2,
+            'b3':b3,
+            'bG3':bG3,
+            'bdG2':bdG2,
+            'bGamma3':bGamma3,
+        }
+
+        self.calculator.fgrowth = fgrowth
+
+        return self
+
+    def _compute_covariance_box(self):
+        '''Compute the covariance matrix for a box geometry.
+
+        Returns
+        -------
+        self : TrispectrumCovariance
+            Covariance matrix.
+        '''
+
+        self.calculator.vol = self.geometry.volume
+        self.calculator.ndens = self.geometry.nbar
+                                  
+        self._build_covariance()
+
+        return self
+
+    def _compute_covariance_survey(self):
+        '''Compute the covariance matrix for a survey geometry.
+
+        Returns
+        -------
+        self : TrispectrumCovariance
+            Covariance matrix.
+        '''
+
+        self.calculator.vol = self.geometry.I('22')**2 / self.geometry.I('44')
+        self.calculator.ndens = self.geometry.I('44') / self.geometry.I('34')
+        self.calculator.ndens2 = self.geometry.I('44') / self.geometry.I('24')
+        
+        self._build_covariance()
+
+        return self
+    
+    def _build_covariance(self):
+
+        ## Compute the elementary integrals Eq. (13)
+        self.calculator.calc_base_integral()
+
+        k1, k2 = self.kmin_matrices
+
+        ## Compute the non-Gaussian covariance for each combination of multipoles
+        self.set_ell_cov(0, 0, self.calculator.get_cov_T0(0, 0, k1, k2))
+        self.set_ell_cov(2, 2, self.calculator.get_cov_T0(2, 2, k1, k2))
+        self.set_ell_cov(4, 4, self.calculator.get_cov_T0(4, 4, k1, k2))
+        self.set_ell_cov(0, 2, self.calculator.get_cov_T0(0, 2, k1, k2))
+        self.set_ell_cov(0, 4, self.calculator.get_cov_T0(0, 4, k1, k2))
+        self.set_ell_cov(2, 4, self.calculator.get_cov_T0(2, 4, k1, k2))
+
+        return self
