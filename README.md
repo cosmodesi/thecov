@@ -7,7 +7,7 @@ Under active development.
 Status:
 
 - Gaussian (box): ready.
-- Gaussian (cut-sky): works, but being further validated.
+- Gaussian (cut-sky): ready.
 - Regular trispectrum: interface being reworked.
 - Super-sample: to be validated.
 
@@ -69,16 +69,43 @@ geometry = SurveyGeometry(randoms, nmesh=64, boxpad=1.2, alpha=1. / 10., kmodes_
 covariance = GaussianCovariance(geometry)
 covariance.set_kbins(kmin=0, kmax=0.4, dk=0.005)
 
+covariance.set_shotnoise(shotnoise) # optional but recommended
+
 # Load input power spectra (P0, P2, P4) for the Gaussian covariance
 
 covariance.set_pk(P0, 0, has_shotnoise=False)
 covariance.set_pk(P2, 2)
 covariance.set_pk(P4, 4)
 
-covariance.set_shotnoise(shotnoise) # optional but recommended
-
 covariance.compute_covariance()
 
 # Covariance object has functions covariance.cov, covariance.cor,
 # covariance.get_ell_cov(ell1, ell2), etc. to output what you need.
+```
+
+## Citations
+
+If you use this code in a scientific publication, don't forget to cite:
+
+```
+@unpublished{Alves2024prep,
+  author = "Alves, Otavio and {DESI Collaboration}",
+  title  = "Analytic covariance matrix of DESI galaxy power spectrum multipoles",
+  note   = "(in prep.)",
+  year   = "2024"
+}
+
+@article{Wadekar:2019rdu,
+    author = "Wadekar, Digvijay and Scoccimarro, Roman",
+    title = "{Galaxy power spectrum multipoles covariance in perturbation theory}",
+    eprint = "1910.02914",
+    archivePrefix = "arXiv",
+    primaryClass = "astro-ph.CO",
+    doi = "10.1103/PhysRevD.102.123517",
+    journal = "Phys. Rev. D",
+    volume = "102",
+    number = "12",
+    pages = "123517",
+    year = "2020"
+}
 ```
