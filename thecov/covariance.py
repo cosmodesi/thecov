@@ -398,37 +398,56 @@ class TrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
 
         self.calculator.set_pk_lin(self.pk_linear)
     
-    def set_params(self, b1, b2, bG2, b3, bG3, bdG2, bGamma3, fgrowth):
-        '''Set the input parameters to be used for the covariance calculation.
+    def set_params(self, fgrowth, b1, b2=None, g2=None, b3=None, g3=None, g2x=None, g21=None):
+        '''Set the bias parameters to be used for the covariance calculation. If the optional
+           parameters are not set, will use expressions for non-local bias (g_i) from local
+           lagrangian approximation and non-linear bias (b_i) from peak-background split fit
+           of arXiv:1511.01096 rescaled using Appendix C.2 of arXiv:1812.03208, (useful if
+           those parameters aren't constrained).
 
         Parameters
         ----------
+        fgrowth : float
+            Growth rate of the linear power spectrum.
         b1 : float
             Linear bias.
-        b2 : float
+        b2 : float, optional
             Quadratic bias.
-        bG2 : float
-            Galaxy-matter cross-bias.
-        b3 : float
+        g2 : float, optional
+            Non-local bias.
+        b3 : float, optional
             Cubic bias.
-        bG3 : float
-            Galaxy-matter cross-bias.
-        bdG2 : float
-            Galaxy-matter cross-bias.
-        bGamma3 : float
-            Galaxy-matter cross-bias.
-        fgrowth : float
-            Growth rate.
+        g3 : float, optional
+            Non-linear bias.
+        g2x : float, optional
+            Non-local bias.
+        g21 : float, optional
+            Non-local bias.
         '''
 
+        if g2 is None:
+            g2 = -2/7*(b1 - 1)
+        if g3 is None:
+            g3 = 11/63*(b1 - 1)
+        if b2 is None:
+            b2 = 0.412 - 2.143*b1 + 0.929*b1**2 + 0.008*b1**3 + 4/3*g2
+        if g2x is None:
+            g2x = -2/7*b2
+        if g21 is None:
+            g21 = -22/147*(b1 - 1)
+        if b3 is None:
+            b3 = -1.028 + 7.646*b1 - 6.227*b1**2 + 0.912*b1**3 + 4*g2x - 4/3*g3 - 8/3*g21 - 32/21*g2
+
+        #    equation 78 of arXiv:1812.03208 (Wadekar   basis)
+        # vs equation A1 of arXiv:2308.08593 (Kobayashi basis)
         self.calculator.bias = {
-            'b1':b1,
-            'b2':b2,
-            'bG2':bG2,
-            'b3':b3,
-            'bG3':bG3,
-            'bdG2':bdG2,
-            'bGamma3':bGamma3,
+            'b1': b1,
+            'b2': b2,
+            'bG2': g2,
+            'b3': b3,
+            'bG3': g3,
+            'bdG2': g2x,
+            'bGamma3': -4/7*g21, # equation 44 of arXiv:1812.03208
         }
 
         self.calculator.fgrowth = fgrowth
