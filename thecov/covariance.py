@@ -392,7 +392,7 @@ class TrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
                 self.logger.error('k and pk must have the same length.')
 
             from scipy.interpolate import InterpolatedUnivariateSpline
-            pk_spline = InterpolatedUnivariateSpline(np.log(pk_linear[:,0]), np.log(pk_linear[:,1]))
+            pk_spline = InterpolatedUnivariateSpline(np.log(k), np.log(pk_linear))
 
             self.pk_linear = lambda k: np.exp(pk_spline(np.log(k)))
 
