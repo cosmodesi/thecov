@@ -16,7 +16,6 @@ Example
 """
 
 import logging
-import warnings
 import itertools as itt
 
 import numpy as np
@@ -25,7 +24,7 @@ from . import base, geometry
 
 __all__ = ['GaussianCovariance']
 
-class GaussianCovariance(base.MultipoleFourierCovariance):
+class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
     '''Gaussian covariance matrix of power spectrum multipoles in a given geometry.
 
     Attributes
@@ -35,46 +34,8 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
     '''
 
     def __init__(self, geometry=None):
-        base.MultipoleFourierCovariance.__init__(self)
+        base.PowerSpectrumMultipolesCovariance.__init__(self, geometry=geometry)
         self.logger = logging.getLogger('GaussianCovariance')
-
-        self.geometry = geometry
-
-        self._pk = {}
-        self.alphabar = None
-        # alphabar is used to scale the shotnoise contributions to the covariance with (1 + alphabar) factors
-        if hasattr(geometry, 'alpha'):
-            self.alphabar = geometry.alpha
-
-    @property
-    def shotnoise(self):
-        '''Shotnoise of the sample.
-
-        Returns
-        -------
-        float
-            Shotnoise value.'''
-        
-        if isinstance(geometry, geometry.SurveyGeometry):
-            return (1 + self.alphabar) * self.geometry.I('12')/self.geometry.I('22')
-        else:
-            return self.geometry.shotnoise
-
-    def set_shotnoise(self, shotnoise):
-        '''Set shotnoise to specified value. Also scales alphabar so that (1 + alphabar)*I12/I22
-        matches the specified shotnoise.
-
-        Parameters
-        ----------
-        shotnoise : float
-            shotnoise = (1 + alpha)*I12/I22.
-        '''
-
-        self.logger.info(f'Estimated shotnoise was {self.shotnoise}')
-        self.logger.info(f'Setting shotnoise to {shotnoise}.')
-        # self.geometry.shotnoise = shotnoise
-        self.alphabar = shotnoise * self.geometry.I('22') / self.geometry.I('12') - 1
-        self.logger.info(f'Setting alphabar to {self.alphabar} based on given shotnoise value.')
 
     def set_pk(self, pk, ell, has_shotnoise=False):
         '''Set the input power spectrum to be used for the covariance calculation.
@@ -122,24 +83,6 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
             return force_return*np.ones(self.kbins)
         elif force_return:
             return np.zeros(self.kbins)
-
-    def compute_covariance(self, ells=(0, 2, 4)):
-        '''Compute the covariance matrix for the given geometry and power spectra.
-
-        Parameters
-        ----------
-        ells : tuple, optional
-            Multipoles of the power spectra to have the covariance calculated for.
-        '''
-
-        self._ells = ells
-        self._mshape = (self.kbins, self.kbins)
-
-        if isinstance(self.geometry, geometry.BoxGeometry):
-            return self._compute_covariance_box()
-
-        if isinstance(self.geometry, geometry.SurveyGeometry):
-            return self._compute_covariance_survey()
 
     def _compute_covariance_box(self):
         '''Compute the covariance matrix for a box geometry.
@@ -323,7 +266,6 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
         
         return dlikelihood
         
-        
     def load_pk(self, filename, remove_shotnoise=None, set_shotnoise=True):
         '''Load power spectrum from pypower file and set it to be used for the covariance calculation.
 
@@ -388,3 +330,176 @@ class GaussianCovariance(base.MultipoleFourierCovariance):
         self.set_pk(P0, 0, has_shotnoise=not remove_shotnoise)
         self.set_pk(P2, 2)
         self.set_pk(P4, 4)
+
+class TrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
+    '''Regular trispectrum covariance matrix of power spectrum multipoles in a given geometry.
+
+    Attributes
+    ----------
+    geometry : geometry.Geometry
+        Geometry of the survey. Can be a BoxGeometry or a SurveyGeometry object.
+    '''
+
+    def __init__(self, geometry=None):
+
+        base.PowerSpectrumMultipolesCovariance.__init__(self, geometry=geometry)
+        self.logger = logging.getLogger('TrispectrumCovariance')
+
+        from powercovfft import PowerSpecCovFFT
+        self.calculator = PowerSpecCovFFT()
+
+    def set_kbins(self, kmin, kmax, dk):
+        '''Set the k-binning for the covariance matrix.
+
+        Parameters
+        ----------
+        kmin : float
+            Minimum k value.
+        kmax : float
+            Maximum k value.
+        dk : float
+            Width of the k bins.
+        '''
+
+        base.PowerSpectrumMultipolesCovariance.set_kbins(self, kmin, kmax, dk)
+
+        ## Set the FFTLog
+        config_fft = {'nu':-0.3, 'kmin':1e-5, 'kmax':1e+1, 'nmax':512}
+        self.calculator.set_power_law_decomp(config_fft)
+
+        k1, k2 = self.kmin_matrices
+
+        ## Precompute the master integrals
+        self.calculator.calc_master_integral(k1, k2)
+
+        return self
+    
+    def set_pk(self, pk_linear, k=None):
+        '''Set the input linear power spectrum to be used for the covariance calculation.
+
+        Parameters
+        ----------
+        k : array_like
+            Wavenumbers.
+        pk : array_like
+            Power spectrum.
+        '''
+
+        if callable(pk_linear):
+            self.pk_linear = pk_linear
+        else:
+            if len(k) != len(pk_linear):
+                self.logger.error('k and pk must have the same length.')
+
+            from scipy.interpolate import InterpolatedUnivariateSpline
+            pk_spline = InterpolatedUnivariateSpline(np.log(k), np.log(pk_linear))
+
+            self.pk_linear = lambda k: np.exp(pk_spline(np.log(k)))
+
+        self.calculator.set_pk_lin(self.pk_linear)
+    
+    def set_params(self, fgrowth, b1, b2=None, g2=None, b3=None, g3=None, g2x=None, g21=None):
+        '''Set the bias parameters to be used for the covariance calculation. If the optional
+           parameters are not set, will use expressions for non-local bias (g_i) from local
+           lagrangian approximation and non-linear bias (b_i) from peak-background split fit
+           of arXiv:1511.01096 rescaled using Appendix C.2 of arXiv:1812.03208, (useful if
+           those parameters aren't constrained).
+
+        Parameters
+        ----------
+        fgrowth : float
+            Growth rate of the linear power spectrum.
+        b1 : float
+            Linear bias.
+        b2 : float, optional
+            Quadratic bias.
+        g2 : float, optional
+            Non-local bias.
+        b3 : float, optional
+            Cubic bias.
+        g3 : float, optional
+            Non-linear bias.
+        g2x : float, optional
+            Non-local bias.
+        g21 : float, optional
+            Non-local bias.
+        '''
+
+        if g2 is None:
+            g2 = -2/7*(b1 - 1)
+        if g3 is None:
+            g3 = 11/63*(b1 - 1)
+        if b2 is None:
+            b2 = 0.412 - 2.143*b1 + 0.929*b1**2 + 0.008*b1**3 + 4/3*g2
+        if g2x is None:
+            g2x = -2/7*b2
+        if g21 is None:
+            g21 = -22/147*(b1 - 1)
+        if b3 is None:
+            b3 = -1.028 + 7.646*b1 - 6.227*b1**2 + 0.912*b1**3 + 4*g2x - 4/3*g3 - 8/3*g21 - 32/21*g2
+
+        #    equation 78 of arXiv:1812.03208 (Wadekar   basis)
+        # vs equation A1 of arXiv:2308.08593 (Kobayashi basis)
+        self.calculator.bias = {
+            'b1': b1,
+            'b2': b2,
+            'bG2': g2,
+            'b3': b3,
+            'bG3': g3,
+            'bdG2': g2x,
+            'bGamma3': -4/7*g21, # equation 44 of arXiv:1812.03208
+        }
+
+        self.calculator.fgrowth = fgrowth
+
+        return self
+
+    def _compute_covariance_box(self):
+        '''Compute the covariance matrix for a box geometry.
+
+        Returns
+        -------
+        self : TrispectrumCovariance
+            Covariance matrix.
+        '''
+
+        self.calculator.vol = self.geometry.volume
+        self.calculator.ndens = self.geometry.nbar
+                                  
+        self._build_covariance()
+
+        return self
+
+    def _compute_covariance_survey(self):
+        '''Compute the covariance matrix for a survey geometry.
+
+        Returns
+        -------
+        self : TrispectrumCovariance
+            Covariance matrix.
+        '''
+
+        self.calculator.vol = self.geometry.I('22')**2 / self.geometry.I('44')
+        self.calculator.ndens = self.geometry.I('44') / self.geometry.I('34')
+        self.calculator.ndens2 = self.geometry.I('44') / self.geometry.I('24')
+        
+        self._build_covariance()
+
+        return self
+    
+    def _build_covariance(self):
+
+        ## Compute the elementary integrals Eq. (13)
+        self.calculator.calc_base_integral()
+
+        k1, k2 = self.kmin_matrices
+
+        ## Compute the non-Gaussian covariance for each combination of multipoles
+        self.set_ell_cov(0, 0, self.calculator.get_cov_T0(0, 0, k1, k2))
+        self.set_ell_cov(2, 2, self.calculator.get_cov_T0(2, 2, k1, k2))
+        self.set_ell_cov(4, 4, self.calculator.get_cov_T0(4, 4, k1, k2))
+        self.set_ell_cov(0, 2, self.calculator.get_cov_T0(0, 2, k1, k2))
+        self.set_ell_cov(0, 4, self.calculator.get_cov_T0(0, 4, k1, k2))
+        self.set_ell_cov(2, 4, self.calculator.get_cov_T0(2, 4, k1, k2))
+
+        return self

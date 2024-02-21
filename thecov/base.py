@@ -6,6 +6,8 @@ import copy
 
 import numpy as np
 
+from . import geometry
+
 from . import utils
 import logging
 
@@ -99,30 +101,16 @@ class Covariance:
         return new_cov
 
     def __add__(self, y):
-        obj = copy.deepcopy(self)
-        obj.cov += (y.cov if isinstance(y, Covariance) else y)
-
-        return obj
+        return Covariance(self.cov + (y.cov if isinstance(y, Covariance) else y))
 
     def __sub__(self, y):
-
-        obj = copy.deepcopy(self)
-        obj.cov -= (y.cov if isinstance(y, Covariance) else y)
-
-        return obj
+        return self.__add__(-y)
 
     def __mul__(self, y):
-
-        obj = copy.deepcopy(self)
-        obj.cov *= y
-
-        return obj
+        return Covariance(self.cov * y)
 
     def __truediv__(self, y):
-        obj = copy.deepcopy(self)
-        obj.cov /= y
-
-        return obj
+        return Covariance(self.cov / y)
 
     @property
     def T(self):
@@ -280,38 +268,20 @@ class MultipoleCovariance(Covariance):
         self._mshape = (0, 0)
 
     def __add__(self, y):
-        obj = copy.deepcopy(self)
-
         if isinstance(y, MultipoleCovariance):
             assert self.ells == y.ells, "ells are not the same"
 
-        obj.set_full_cov(self.cov + (y.cov if isinstance(y, Covariance) else y), self.ells)
-
-        return obj
+        return MultipoleCovariance.from_array(self.cov + (y.cov if isinstance(y, Covariance) else y), self.ells)
 
     def __sub__(self, y):
-        obj = copy.deepcopy(self)
-
-        if isinstance(y, MultipoleCovariance):
-            assert self.ells == y.ells, "ells are not the same"
-
-        obj.set_full_cov(self.cov - (y.cov if isinstance(y, Covariance) else y), self.ells)
-
-        return obj
+        return self.__add__(-y)
 
     def __mul__(self, y):
-        obj = copy.deepcopy(self)
-
-        obj.set_full_cov(self.cov * y, self.ells)
-
-        return obj
+        return MultipoleCovariance.from_array(self.cov * y, self.ells)
+        
 
     def __truediv__(self, y):
-        obj = copy.deepcopy(self)
-
-        obj.set_full_cov(self.cov / y, self.ells)
-
-        return obj
+        return MultipoleCovariance.from_array(self.cov / y, self.ells)
 
     @property
     def cov(self):
@@ -683,6 +653,13 @@ class FourierCovariance(Covariance, FourierBinned):
 
         return k1, k2
 
+    @property
+    def kmin_matrices(self):
+        k1 = np.einsum('i,j->ij', self.kedges[:-1], np.ones_like(self.kmid))
+        k2 = k1.T
+
+        return k1, k2
+
     def kcut(self, kmin=None, kmax=None):
         if kmin is None:
             kmin = self.kmin
@@ -698,7 +675,7 @@ class FourierCovariance(Covariance, FourierBinned):
 
         return self
 
-class MultipoleFourierCovariance(MultipoleCovariance, FourierBinned):
+class MultipoleFourierCovariance(MultipoleCovariance, FourierCovariance):
 
     def __init__(self):
         MultipoleCovariance.__init__(self)
@@ -804,3 +781,79 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierBinned):
         size = (np.round(size) if np.allclose(np.round(size), size) else size).astype(int)
         self._mshape = (size, size)
         return super().set_kbins(kmin, kmax, dk, nmodes)
+
+
+class PowerSpectrumMultipolesCovariance(MultipoleFourierCovariance):
+    '''Covariance matrix of power spectrum multipoles in a given geometry.
+
+    Attributes
+    ----------
+    geometry : geometry.Geometry
+        Geometry of the survey. Can be a BoxGeometry or a SurveyGeometry object.
+    '''
+
+    def __init__(self, geometry=None):
+        MultipoleFourierCovariance.__init__(self)
+        self.logger = logging.getLogger('PowerSpectrumCovariance')
+
+        self.geometry = geometry
+
+        self._pk = {}
+        self.alphabar = None
+        # alphabar is used to scale the shotnoise contributions to the covariance with (1 + alphabar) factors
+        if hasattr(geometry, 'alpha'):
+            self.alphabar = geometry.alpha
+
+    @property
+    def shotnoise(self):
+        '''Shotnoise of the sample.
+
+        Returns
+        -------
+        float
+            Shotnoise value.'''
+        
+        if isinstance(geometry, geometry.SurveyGeometry):
+            return (1 + self.alphabar) * self.geometry.I('12')/self.geometry.I('22')
+        else:
+            return self.geometry.shotnoise
+
+    def set_shotnoise(self, shotnoise):
+        '''Set shotnoise to specified value. Also scales alphabar so that (1 + alphabar)*I12/I22
+        matches the specified shotnoise.
+
+        Parameters
+        ----------
+        shotnoise : float
+            shotnoise = (1 + alpha)*I12/I22.
+        '''
+
+        self.logger.info(f'Estimated shotnoise was {self.shotnoise}')
+        self.logger.info(f'Setting shotnoise to {shotnoise}.')
+        # self.geometry.shotnoise = shotnoise
+        self.alphabar = shotnoise * self.geometry.I('22') / self.geometry.I('12') - 1
+        self.logger.info(f'Setting alphabar to {self.alphabar} based on given shotnoise value.')
+
+    def compute_covariance(self, ells=(0, 2, 4)):
+        '''Compute the covariance matrix for the given geometry and power spectra.
+
+        Parameters
+        ----------
+        ells : tuple, optional
+            Multipoles of the power spectra to have the covariance calculated for.
+        '''
+
+        self._ells = ells
+        self._mshape = (self.kbins, self.kbins)
+
+        if isinstance(self.geometry, geometry.BoxGeometry):
+            return self._compute_covariance_box()
+
+        if isinstance(self.geometry, geometry.SurveyGeometry):
+            return self._compute_covariance_survey()
+
+    def _compute_covariance_box(self):
+        raise NotImplementedError
+
+    def _compute_covariance_survey(self):
+        raise NotImplementedError

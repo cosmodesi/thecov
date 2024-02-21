@@ -498,3 +498,23 @@ def ridgeplot_cov(cov, k=None, step=1, nrange=5, figsize=(5,25), logplot=False, 
     plot.subplots_adjust(hspace=hspace)
 
     return fig, axes
+
+def fgrowth(Omega_m, z):
+    '''Estimates the growth rate at redshift z.
+
+    Parameters
+    ----------
+    Omega_m : float
+        Matter density parameter.
+    z : float
+        Redshift.
+
+    Returns
+    -------
+    float
+        Growth rate.
+    '''
+    from scipy.special import hyp2f1
+
+    return (1. + 6*(Omega_m-1)*hyp2f1(4/3., 2, 17/6., (1-1/Omega_m)/(1+z)**3) / \
+          (11*Omega_m*(1+z)**3*hyp2f1(1/3., 1, 11/6., (1-1/Omega_m)/(1+z)**3) ))
