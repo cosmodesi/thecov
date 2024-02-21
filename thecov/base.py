@@ -101,30 +101,16 @@ class Covariance:
         return new_cov
 
     def __add__(self, y):
-        obj = copy.deepcopy(self)
-        obj.cov += (y.cov if isinstance(y, Covariance) else y)
-
-        return obj
+        return Covariance(self.cov + (y.cov if isinstance(y, Covariance) else y))
 
     def __sub__(self, y):
-
-        obj = copy.deepcopy(self)
-        obj.cov -= (y.cov if isinstance(y, Covariance) else y)
-
-        return obj
+        return self.__add__(-y)
 
     def __mul__(self, y):
-
-        obj = copy.deepcopy(self)
-        obj.cov *= y
-
-        return obj
+        return Covariance(self.cov * y)
 
     def __truediv__(self, y):
-        obj = copy.deepcopy(self)
-        obj.cov /= y
-
-        return obj
+        return Covariance(self.cov / y)
 
     @property
     def T(self):
@@ -282,38 +268,20 @@ class MultipoleCovariance(Covariance):
         self._mshape = (0, 0)
 
     def __add__(self, y):
-        obj = copy.deepcopy(self)
-
         if isinstance(y, MultipoleCovariance):
             assert self.ells == y.ells, "ells are not the same"
 
-        obj.set_full_cov(self.cov + (y.cov if isinstance(y, Covariance) else y), self.ells)
-
-        return obj
+        return MultipoleCovariance.from_array(self.cov + (y.cov if isinstance(y, Covariance) else y), self.ells)
 
     def __sub__(self, y):
-        obj = copy.deepcopy(self)
-
-        if isinstance(y, MultipoleCovariance):
-            assert self.ells == y.ells, "ells are not the same"
-
-        obj.set_full_cov(self.cov - (y.cov if isinstance(y, Covariance) else y), self.ells)
-
-        return obj
+        return self.__add__(-y)
 
     def __mul__(self, y):
-        obj = copy.deepcopy(self)
-
-        obj.set_full_cov(self.cov * y, self.ells)
-
-        return obj
+        return MultipoleCovariance.from_array(self.cov * y, self.ells)
+        
 
     def __truediv__(self, y):
-        obj = copy.deepcopy(self)
-
-        obj.set_full_cov(self.cov / y, self.ells)
-
-        return obj
+        return MultipoleCovariance.from_array(self.cov / y, self.ells)
 
     @property
     def cov(self):
@@ -707,7 +675,7 @@ class FourierCovariance(Covariance, FourierBinned):
 
         return self
 
-class MultipoleFourierCovariance(MultipoleCovariance, FourierBinned):
+class MultipoleFourierCovariance(MultipoleCovariance, FourierCovariance):
 
     def __init__(self):
         MultipoleCovariance.__init__(self)
