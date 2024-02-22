@@ -799,40 +799,35 @@ class PowerSpectrumMultipolesCovariance(MultipoleFourierCovariance):
         self.geometry = geometry
 
         self._pk = {}
-        self.alphabar = None
-        # alphabar is used to scale the shotnoise contributions to the covariance with (1 + alphabar) factors
-        if hasattr(geometry, 'alpha'):
-            self.alphabar = geometry.alpha
+        self._alpha = None
+
+        self.pk_renorm = 1
 
     @property
-    def shotnoise(self):
-        '''Shotnoise of the sample.
+    def alpha(self):
+        '''The value of alpha. This is the alpha used in the Pk measurements.
+           It can be different from the alpha used in the geometry object.
 
         Returns
         -------
         float
-            Shotnoise value.'''
-        
-        if isinstance(geometry, geometry.SurveyGeometry):
-            return (1 + self.alphabar) * self.geometry.I('12')/self.geometry.I('22')
-        else:
-            return self.geometry.shotnoise
-
-    def set_shotnoise(self, shotnoise):
-        '''Set shotnoise to specified value. Also scales alphabar so that (1 + alphabar)*I12/I22
-        matches the specified shotnoise.
+            The value of alpha.
+        '''
+        if self._alpha is None:
+            return self.geometry.alpha
+        return self._alpha
+    
+    @alpha.setter
+    def alpha(self, alpha):
+        '''Sets the value of alpha. This is the alpha used in the Pk measurements.
+           It can be different from the alpha used in the geometry object.
 
         Parameters
         ----------
-        shotnoise : float
-            shotnoise = (1 + alpha)*I12/I22.
+        alpha : float
+            The value of alpha.
         '''
-
-        self.logger.info(f'Estimated shotnoise was {self.shotnoise}')
-        self.logger.info(f'Setting shotnoise to {shotnoise}.')
-        # self.geometry.shotnoise = shotnoise
-        self.alphabar = shotnoise * self.geometry.I('22') / self.geometry.I('12') - 1
-        self.logger.info(f'Setting alphabar to {self.alphabar} based on given shotnoise value.')
+        self._alpha = alpha
 
     def compute_covariance(self, ells=(0, 2, 4)):
         '''Compute the covariance matrix for the given geometry and power spectra.
@@ -857,3 +852,33 @@ class PowerSpectrumMultipolesCovariance(MultipoleFourierCovariance):
 
     def _compute_covariance_survey(self):
         raise NotImplementedError
+
+    @property
+    def shotnoise(self):
+        '''Shotnoise of the sample in the same normalization as the power spectrum.
+
+        Returns
+        -------
+        float
+            Shotnoise value.'''
+        
+        if isinstance(geometry, geometry.SurveyGeometry):
+            return self.pk_renorm * (1 + self.alpha) * self.geometry.I('12')/self.geometry.I('22')
+        else:
+            return self.pk_renorm * self.geometry.shotnoise
+
+    def set_shotnoise(self, shotnoise):
+        '''Determines the relative normalization of the power spectrum by comparing
+           the estimated FKP shotnoise with the given shotnoise value.
+
+        Parameters
+        ----------
+        shotnoise : float
+            shotnoise with same normalization as the power spectrum.
+        '''
+
+        self.logger.info(f'Estimated shotnoise was {self.shotnoise}')
+        self.logger.info(f'With new normalization, shotnoise is {shotnoise}.')
+
+        self.pk_renorm *= shotnoise / self.shotnoise
+        self.logger.info(f'Setting pk_renorm to {self.pk_renorm} based on given shotnoise value.')

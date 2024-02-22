@@ -127,9 +127,10 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
             Covariance matrix.
         '''
 
-        func = lambda ik,jk:                 self._get_pk_pk_term(ik, jk) + \
-                    (1 + self.alphabar)    * self._get_pk_shotnoise_term(ik, jk) + \
-                    (1 + self.alphabar)**2 * self._get_shotnoise_shotnoise_term(ik, jk)
+        # terms without the power spectrum have to be multiplied by its relative normalization pk_renorm
+        func = lambda ik,jk:                                   self._get_pk_pk_term(ik, jk) + \
+                    (1 + self.alpha)    * self.pk_renorm    * self._get_pk_shotnoise_term(ik, jk) + \
+                    (1 + self.alpha)**2 * self.pk_renorm**2 * self._get_shotnoise_shotnoise_term(ik, jk)
 
         self._set_survey_covariance(self._build_covariance_survey(func), self)
 
@@ -222,47 +223,47 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         return WinKernel[ik, delta_k, 14]
     
     def rescale_shotnoise(self, ref_cov, set=True):
-        original_alphabar = self.geometry.alpha
-        set_alphabar = self.alphabar
+        original_alpha = self.geometry.alpha
+        set_alpha = self.alpha
 
-        original_shotnoise = (1 + original_alphabar) * self.geometry.I('12')/self.geometry.I('22')
-        set_shotnoise =      (1 +      set_alphabar) * self.geometry.I('12')/self.geometry.I('22')
+        original_shotnoise = (1 + original_alpha) * self.geometry.I('12')/self.geometry.I('22')
+        set_shotnoise =      (1 +      set_alpha) * self.geometry.I('12')/self.geometry.I('22')
 
         from scipy.optimize import root_scalar
         result = root_scalar(self._get_shotnoise_rescaling_func(ref_cov), x0=0., x1=0.001)
 
-        new_alphabar = result.root
-        new_shotnoise = (1 + new_alphabar) * self.geometry.I('12')/self.geometry.I('22')
+        new_alpha = result.root
+        new_shotnoise = (1 + new_alpha) * self.geometry.I('12')/self.geometry.I('22')
 
-        self.logger.info(f'alphabar rescaling: {original_alphabar} -> {set_alphabar} -> {new_alphabar}')
+        self.logger.info(f'alpha rescaling: {original_alpha} -> {set_alpha} -> {new_alpha}')
         self.logger.info(f'shotnoise rescaling: {original_shotnoise} -> {set_shotnoise} -> {new_shotnoise}')
         self.logger.info(f'ratio: {new_shotnoise/set_shotnoise}')
 
         if set:
-            self.alphabar = new_alphabar
+            self.alpha = new_alpha
 
-        return new_alphabar, new_shotnoise
+        return new_alpha, new_shotnoise
 
     def _get_shotnoise_rescaling_func(self, ref_cov):
 
-        def get_covariance(alphabar):
+        def get_covariance(alpha):
             cov_func = lambda ik,jk:        self._get_pk_pk_term(ik, jk) + \
-                        (1 + alphabar)    * self._get_pk_shotnoise_term(ik, jk) + \
-                        (1 + alphabar)**2 * self._get_shotnoise_shotnoise_term(ik, jk)
+                        (1 + alpha)    * self._get_pk_shotnoise_term(ik, jk) + \
+                        (1 + alpha)**2 * self._get_shotnoise_shotnoise_term(ik, jk)
 
             return self._build_covariance_survey(cov_func)
 
-        get_dcov_dalphabar = lambda alphabar: \
+        get_dcov_dalpha = lambda alpha: \
                                self._build_covariance_survey(self._get_pk_shotnoise_term) + \
-            2*(1 + alphabar) * self._build_covariance_survey(self._get_shotnoise_shotnoise_term)
+            2*(1 + alpha) * self._build_covariance_survey(self._get_shotnoise_shotnoise_term)
         
         @np.vectorize
-        def dlikelihood(alphabar):
-            covariance = self._set_survey_covariance(get_covariance(alphabar)).cov
+        def dlikelihood(alpha):
+            covariance = self._set_survey_covariance(get_covariance(alpha)).cov
             precision_matrix = np.linalg.inv(covariance)
-            dcov_dalphabar = self._set_survey_covariance(get_dcov_dalphabar(alphabar)).cov
+            dcov_dalpha = self._set_survey_covariance(get_dcov_dalpha(alpha)).cov
 
-            return np.trace((ref_cov.cov - covariance) @ precision_matrix @ dcov_dalphabar @ precision_matrix)
+            return np.trace((ref_cov.cov - covariance) @ precision_matrix @ dcov_dalpha @ precision_matrix)
         
         return dlikelihood
         
@@ -414,15 +415,15 @@ class TrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
         b2 : float, optional
             Quadratic bias.
         g2 : float, optional
-            Non-local bias.
+            gamma_2 non-local bias.
         b3 : float, optional
             Cubic bias.
         g3 : float, optional
-            Non-linear bias.
+            gamma_3 non-local bias.
         g2x : float, optional
-            Non-local bias.
+            gamma_2^x non-local bias.
         g21 : float, optional
-            Non-local bias.
+            gamma_{21} non-local  bias.
         '''
 
         if g2 is None:
