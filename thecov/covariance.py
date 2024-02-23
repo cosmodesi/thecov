@@ -245,25 +245,22 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         return new_alpha, new_shotnoise
 
     def _get_shotnoise_rescaling_func(self, ref_cov, preproc=None):
-        if preproc is None:
-            preproc = lambda x: x
-
-        def get_covariance(alpha):
-            cov_func = lambda ik,jk:                         self._get_pk_pk_term(ik, jk) + \
-                        (1 + alpha)    * self.pk_renorm    * self._get_pk_shotnoise_term(ik, jk) + \
-                        (1 + alpha)**2 * self.pk_renorm**2 * self._get_shotnoise_shotnoise_term(ik, jk)
-
-            return self._build_covariance_survey(cov_func)
-
-        get_dcov_dalpha = lambda alpha: \
-                            self._build_covariance_survey(self._get_pk_shotnoise_term) + \
-            2*(1 + alpha) * self._build_covariance_survey(self._get_shotnoise_shotnoise_term)
         
         @np.vectorize
         def dlikelihood(alpha):
-            covariance = preproc(self._set_survey_covariance(get_covariance(alpha))).cov
+            if preproc is None:
+                preproc = lambda x: x
+
+            cov_func = lambda ik,jk:                         self._get_pk_pk_term(ik, jk) + \
+                        (1 + alpha)    * self.pk_renorm    * self._get_pk_shotnoise_term(ik, jk) + \
+                        (1 + alpha)**2 * self.pk_renorm**2 * self._get_shotnoise_shotnoise_term(ik, jk)
+            
+            get_dcov_dalpha = self._build_covariance_survey(self._get_pk_shotnoise_term) + \
+              2*(1 + alpha) * self._build_covariance_survey(self._get_shotnoise_shotnoise_term)
+            
+            covariance = preproc(self._set_survey_covariance(self._build_covariance_survey(cov_func))).cov
             precision_matrix = np.linalg.inv(covariance)
-            dcov_dalpha = preproc(self._set_survey_covariance(get_dcov_dalpha(alpha))).cov
+            dcov_dalpha = preproc(self._set_survey_covariance(get_dcov_dalpha)).cov
 
             return np.trace((ref_cov.cov - covariance) @ precision_matrix @ dcov_dalpha @ precision_matrix)
         
