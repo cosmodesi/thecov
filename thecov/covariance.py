@@ -226,8 +226,8 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         original_alpha = self.geometry.alpha
         set_alpha = self.alpha
 
-        original_shotnoise = (1 + original_alpha) * self.geometry.I('12')/self.geometry.I('22')
-        set_shotnoise =      (1 +      set_alpha) * self.geometry.I('12')/self.geometry.I('22')
+        original_shotnoise = (1 + original_alpha) * self.pk_renorm * self.geometry.I('12')/self.geometry.I('22')
+        set_shotnoise =      (1 +      set_alpha) * self.pk_renorm * self.geometry.I('12')/self.geometry.I('22')
 
         from scipy.optimize import root_scalar
         result = root_scalar(self._get_shotnoise_rescaling_func(ref_cov), x0=0., x1=0.001)
@@ -247,14 +247,14 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
     def _get_shotnoise_rescaling_func(self, ref_cov):
 
         def get_covariance(alpha):
-            cov_func = lambda ik,jk:        self._get_pk_pk_term(ik, jk) + \
-                        (1 + alpha)    * self._get_pk_shotnoise_term(ik, jk) + \
-                        (1 + alpha)**2 * self._get_shotnoise_shotnoise_term(ik, jk)
+            cov_func = lambda ik,jk:                         self._get_pk_pk_term(ik, jk) + \
+                        (1 + alpha)    * self.pk_renorm    * self._get_pk_shotnoise_term(ik, jk) + \
+                        (1 + alpha)**2 * self.pk_renorm**2 * self._get_shotnoise_shotnoise_term(ik, jk)
 
             return self._build_covariance_survey(cov_func)
 
         get_dcov_dalpha = lambda alpha: \
-                               self._build_covariance_survey(self._get_pk_shotnoise_term) + \
+                            self._build_covariance_survey(self._get_pk_shotnoise_term) + \
             2*(1 + alpha) * self._build_covariance_survey(self._get_shotnoise_shotnoise_term)
         
         @np.vectorize
