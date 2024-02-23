@@ -222,7 +222,7 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         
         return WinKernel[ik, delta_k, 14]
     
-    def rescale_shotnoise(self, ref_cov, set=True):
+    def rescale_shotnoise(self, ref_cov, set=True, preproc=None):
         original_alpha = self.geometry.alpha
         set_alpha = self.alpha
 
@@ -230,10 +230,10 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         set_shotnoise =      (1 +      set_alpha) * self.pk_renorm * self.geometry.I('12')/self.geometry.I('22')
 
         from scipy.optimize import root_scalar
-        result = root_scalar(self._get_shotnoise_rescaling_func(ref_cov), x0=0., x1=0.001)
+        result = root_scalar(self._get_shotnoise_rescaling_func(ref_cov, preproc=preproc), x0=0, x1=set_alpha)
 
         new_alpha = result.root
-        new_shotnoise = (1 + new_alpha) * self.geometry.I('12')/self.geometry.I('22')
+        new_shotnoise = (1 + new_alpha) * self.pk_renorm * self.geometry.I('12')/self.geometry.I('22')
 
         self.logger.info(f'alpha rescaling: {original_alpha} -> {set_alpha} -> {new_alpha}')
         self.logger.info(f'shotnoise rescaling: {original_shotnoise} -> {set_shotnoise} -> {new_shotnoise}')
@@ -244,7 +244,9 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
 
         return new_alpha, new_shotnoise
 
-    def _get_shotnoise_rescaling_func(self, ref_cov):
+    def _get_shotnoise_rescaling_func(self, ref_cov, preproc=None):
+        if preproc is None:
+            preproc = lambda x: x
 
         def get_covariance(alpha):
             cov_func = lambda ik,jk:                         self._get_pk_pk_term(ik, jk) + \
@@ -259,9 +261,9 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         
         @np.vectorize
         def dlikelihood(alpha):
-            covariance = self._set_survey_covariance(get_covariance(alpha)).cov
+            covariance = preproc(self._set_survey_covariance(get_covariance(alpha))).cov
             precision_matrix = np.linalg.inv(covariance)
-            dcov_dalpha = self._set_survey_covariance(get_dcov_dalpha(alpha)).cov
+            dcov_dalpha = preproc(self._set_survey_covariance(get_dcov_dalpha(alpha))).cov
 
             return np.trace((ref_cov.cov - covariance) @ precision_matrix @ dcov_dalpha @ precision_matrix)
         
