@@ -15,6 +15,7 @@ from abc import ABC
 import itertools as itt
 import multiprocessing as mp
 import logging
+import functools
 
 import numpy as np
 
@@ -302,7 +303,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     .. [1] https://arxiv.org/abs/1910.02914
     '''
 
-    def __init__(self, randoms, nmesh=None, cellsize=None, boxsize=None, boxpad=1.2, kmax_mask=0.04, delta_k_max=10, kmodes_sampled=10000, alpha=1.0, nthreads=None, resume_file=None, tqdm=shell_tqdm, **kwargs):
+    def __init__(self, randoms, nmesh=None, cellsize=None, boxsize=None, boxpad=1.2, kmax_mask=0.04, delta_k_max=3, kmodes_sampled=10000, alpha=1.0, nthreads=None, resume_file=None, tqdm=shell_tqdm, **kwargs):
 
         base.FourierBinned.__init__(self)
 
@@ -328,7 +329,6 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         from mockfactory import Catalog
         from pypower import CatalogMesh
         self._randoms = Catalog(randoms)
-        self._ngals = self.randoms.size * self.alpha  # not used
         for name in ['WEIGHT', 'WEIGHT_FKP']:
             if name not in self._randoms: self._randoms[name] = np.ones(self._randoms.size, dtype='f8')
         if 'NZ' not in self._randoms:
@@ -356,11 +356,11 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self.nmesh = self._mesh.nmesh[0]
         assert np.allclose(self._mesh.boxsize, self.boxsize) and np.all(self._mesh.nmesh == self.nmesh)
 
-        knyquist = np.pi * self.nmesh / self.boxsize
-        self.logger.info(f'Nyquist wavelength of window FFTs = {knyquist}.')
+        
+        self.logger.info(f'Nyquist wavelength of window FFTs = {self.knyquist}.')
 
-        if knyquist < kmax_mask:
-            self.logger.warning(f'Nyquist frequency {knyquist} smaller than required kmax_mask = {kmax_mask}.')
+        if self.knyquist < kmax_mask:
+            self.logger.warning(f'Nyquist frequency {self.knyquist} smaller than required kmax_mask = {kmax_mask}.')
 
         self.logger.info(f'Average of {self._mesh.data_size / self.nmesh**3} objects per voxel.')
 
@@ -372,6 +372,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         else:
             self._resume_file = None
 
+    @property
+    def knyquist(self):
+        return np.pi * self.nmesh / self.boxsize
 
     def W_cat(self, W):
         '''Adds a column to the random catalog with the window function Wij.
@@ -394,6 +397,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         return self._randoms[f'W{w}']
 
+    @functools.lru_cache(maxsize=100, typed=False)
     def I(self, W):
         '''Computes the integral Iij of the window function Wij.
 
@@ -408,11 +412,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             Integral Iij of the window function Wij.
         '''
         w = W.lower().replace("i", "").replace("w", "")
-        if w not in self._I:
-            self.W_cat(w)
-            self._I[w] = (self._randoms[f'W{w}'].sum() * self.alpha).tolist()
-
-        return self._I[w]
+        self.W_cat(w)
+        return (self._randoms[f'W{w}'].sum() * self.alpha).tolist()
 
     def W(self, W):
         '''Returns FFT of the window function Wij. If it has not been computed yet, it is computed.
@@ -430,20 +431,61 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         w = W.lower().replace("w", "")
         if w not in self._W:
             self.W_cat(w)
-            self.compute_cartesian_fft(w.replace("x", "").replace("y", "").replace("z", ""))
+            if 'x' in w or 'y' in w or 'z' in w:
+                self.compute_cartesian_ffts(w)
+            else:
+                self.set_cartesian_fft(f'W{w}', self.get_fft(f'W{w}'))
         return self._W[w]
+    
+    @property
+    def nmesh(self):
+        return self._nmesh
+    
+    @nmesh.setter
+    def nmesh(self, nmesh):
+        self._nmesh = nmesh
+        self._update_ikgrid()
 
-    def compute_cartesian_ffts(self, Wij=('W12', 'W22')):
-        '''Computes the FFTs of the window functions Wij.
+    def _update_ikgrid(self):
+        self._ikgrid = []
+        for _ in range(3):
+            iik = np.arange(self.nmesh)
+            iik[iik >= self.nmesh // 2] -= self.nmesh
+            self._ikgrid.append(iik)
 
-        Parameters
-        ----------
-        Wij : array_like, optional
-            List of window function labels. Default is ["W12", "W22"].
-        '''
-        [self.W(w) for w in Wij]
+    def get_fft(self, label):
+        toret = self._mesh.clone(data_positions=self.randoms['POSITION'], data_weights=self.randoms[label], position_type='pos').to_mesh(compensate=True).r2c()
+        toret *= self.nmesh**3 * self.alpha
+        return toret.value
+        
+    @functools.lru_cache(maxsize=100, typed=False)
+    def get_power(self, label1, label2=None, kedges=None):
+        if label2 is None:
+            label2 = label1
 
-    def compute_cartesian_fft(self, W):
+        fourier1 = self.get_fft(label1)
+
+        if label1 == label2:
+            fourier2 = fourier1
+        else:
+            fourier2 = self.get_fft(label2)
+
+        power = fourier1 * fourier2.conj()
+
+        kx, ky, kz = np.meshgrid(*self._ikgrid)
+        kpower = np.sqrt(kx**2 + ky**2 + kz**2) * (2 * np.pi / self.boxsize)
+
+        if kedges is None:
+            kedges = self.kedges
+
+        ibin = np.digitize(kpower, kedges)
+
+        pk = np.array([power[ibin == i].mean() for i in range(1, len(kedges))])
+        pk = pk.real if label1 == label2 else pk
+
+        return kedges, pk
+    
+    def compute_cartesian_ffts(self, W):
         '''Computes the FFT of the window function Wij.
 
         Parameters
@@ -451,24 +493,13 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         W : str
             Window function label.
         '''
-        w = W.lower().replace('w', '')
+        w = W.lower().replace('w', '').replace('x', '').replace('y', '').replace('z', '')
         self.W_cat(w)
-
-        self._ikgrid = []
-        for i in range(3):
-            iik = np.arange(self.nmesh)
-            iik[iik >= self.nmesh // 2] -= self.nmesh
-            self._ikgrid.append(iik)
-
-        def get_mesh(label):
-            toret = self._mesh.clone(data_positions=self.randoms['POSITION'], data_weights=self.randoms[label], position_type='pos').to_mesh(compensate=True).r2c()
-            toret *= self.nmesh**3 * self.alpha
-            return toret.value
 
         x = self.randoms['POSITION'].T
 
         with self.tqdm(total=22, desc=f'Computing moments of W{w}') as pbar:
-            self.set_cartesian_fft(f'W{w}', get_mesh(f'W{w}'))
+            self.set_cartesian_fft(f'W{w}', self.get_fft(f'W{w}'))
             self.W(w)
             self.I(w)
             pbar.update(1)
@@ -477,7 +508,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                 label = f'W{w}{i_label}{j_label}'
                 self.randoms[label] = self.randoms[f'W{w}'] * \
                     x[i] * x[j] / (x[0]**2 + x[1]**2 + x[2]**2)
-                self.set_cartesian_fft(label, get_mesh(label))
+                self.set_cartesian_fft(label, self.get_fft(label))
 
                 pbar.update(1)
 
@@ -485,7 +516,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                 label = f'W{w}{i_label}{j_label}{k_label}{l_label}'
                 self.randoms[label] = self.randoms[f'W{w}'] * x[i] * \
                     x[j] * x[k] * x[l] / (x[0]**2 + x[1]**2 + x[2]**2)**2
-                self.set_cartesian_fft(label, get_mesh(label))
+                self.set_cartesian_fft(label, self.get_fft(label))
 
                 pbar.update(1)
 
@@ -512,16 +543,22 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         return self._randoms
 
     @property
-    def ngals(self):
-        return self._ngals
-
-    @ngals.setter
-    def ngals(self, ngals):
-        self._ngals = ngals
-
-    @property
     def kbins(self):
         return len(self.kmid)
+    
+
+
+
+
+
+
+    
+
+
+
+
+
+
 
     def get_window_kernels(self):
         '''Returns the window kernels to be used in the calculation of the covariance.
