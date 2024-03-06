@@ -596,6 +596,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         ell_factor = lambda l1,l2: (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
 
+        last_save = time.time()
+
         for i, km in self.tqdm(enumerate(kmodes), desc='Computing window kernels', total=self.kbins):
 
             if self._resume_file is not None:
@@ -643,12 +645,14 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                     self._WinKernel.append(results)
 
             
-            if self._resume_file is not None:
+            if self._resume_file is not None and (time.time() - last_save) > 300:
                 self.save_resume_file(self._resume_file)
+                last_save = time.time()
                 
         self.logger.info('Window kernels computed.')
 
-        return self.WinKernel
+        if self._resume_file is not None:
+            self.save_resume_file(self._resume_file)
 
         return self._WinKernel
 
