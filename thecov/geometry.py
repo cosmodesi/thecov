@@ -454,7 +454,11 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             self._ikgrid.append(iik)
 
     def get_fft(self, label):
-        toret = self._mesh.clone(data_positions=self.randoms['POSITION'], data_weights=self.randoms[label], position_type='pos').to_mesh(compensate=True).r2c()
+        weights = self.W_cat(label) if 'w' in label.lower() else self.randoms[label]
+        toret = self._mesh.clone(data_positions=self.randoms['POSITION'],
+                                 data_weights=weights,
+                                 position_type='pos',
+                                 ).to_mesh(compensate=True).r2c()
         toret *= self.nmesh**3 * self.alpha
         return toret.value
         
