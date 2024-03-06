@@ -249,6 +249,22 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
             self.alpha = new_alpha
 
         return new_alpha, new_shotnoise
+    
+    
+
+    def _get_volume_rescaling_func(self, reference, preproc=None):
+        if preproc is None:
+            preproc = lambda x: x
+
+        @np.vectorize
+        def dlikelihood(factor):
+            
+            covariance = preproc(self).cov * factor
+            precision_matrix = np.linalg.inv(covariance)
+
+            return np.trace((reference.cov - covariance) @ precision_matrix)
+        
+        return dlikelihood
 
     def _get_shotnoise_rescaling_func(self, reference, preproc=None):
         if preproc is None:
