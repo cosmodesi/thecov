@@ -29,6 +29,10 @@ __all__ = ['BoxGeometry', 'SurveyGeometry']
 W_LABELS = ['12', '12xx', '12xy', '12xz', '12yy', '12yz', '12zz', '12xxxx', '12xxxy', '12xxxz', '12xxyy', '12xxyz', '12xxzz', '12xyyy', '12xyyz', '12xyzz', '12xzzz', '12yyyy', '12yyyz', '12yyzz', '12yzzz',
             '12zzzz', '22', '22xx', '22xy', '22xz', '22yy', '22yz', '22zz', '22xxxx', '22xxxy', '22xxxz', '22xxyy', '22xxyz', '22xxzz', '22xyyy', '22xyyz', '22xyzz', '22xzzz', '22yyyy', '22yyyz', '22yyzz', '22yzzz', '22zzzz']
 
+# Window functions needed for SSC calculation
+W_LABELS_SSC = ['10', '10xx', '10xy', '10xz', '10yy', '10yz', '10zz', '10xxxx', '10xxxy', '10xxxz', '10xxyy', '10xxyz', '10xxzz', '10xyyy', '10xyyz', '10xyzz', '10xzzz', '10yyyy', '10yyyz', '10yyzz', '10yzzz',
+            '10zzzz', '22', '22xx', '22xy', '22xz', '22yy', '22yz', '22zz', '22xxxx', '22xxxy', '22xxxz', '22xxyy', '22xxyz', '22xxzz', '22xyyy', '22xyyz', '22xyzz', '22xzzz', '22yyyy', '22yyyz', '22yyzz', '22yzzz', '22zzzz']
+
 
 class Geometry(ABC):
 
@@ -545,20 +549,70 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     @property
     def kbins(self):
         return len(self.kmid)
-    
 
+    def compute_ssc_power(self, W1, W2=None):
 
+        if W2 is None:
+            W2 = W1
 
+        # Calculate window FFTs if they haven't been initialized yet
+        self.W(W1)
+        self.W(W2)
 
+        # sample kmodes from each k1 bin
 
+        kmin, kmax, dk = 0.0, np.pi * self.nmesh / self.boxsize, 2 * np.pi / self.boxsize
+        kbins = int((kmax - kmin) / dk)
 
-    
+        # HYBRID SAMPLING
+        kmodes, Nmodes = utils.sample_kmodes(kmin=kmin,
+                                             kmax=kmax, # Nyquist frequency
+                                             dk=dk, # fundamental k
+                                             boxsize=self.boxsize,
+                                             max_modes=self.kmodes_sampled,
+                                             k_shell_approx=0.1)
+        
+        self._ssc_power = np.empty([kbins, 6])
 
+        # looping through each k-bin
+        for kbin, modes in enumerate(kmodes):
+            #  quantities have shape (nmodes,)
+            ikx, iky, ikz, _ = modes.T.astype(int)
+            ikr = modes[:,-1]
+            W = lambda label: self.W(f'{label}')[ikx,iky,ikz]
+            kx, ky, kz = ikx/ikr, iky/ikr, ikz/ikr
+        
+            W22_L0 = W('22')
+        
+            W22_L2=1.5*(W('22xx')*kx**2+W('22yy')*ky**2+W('22zz')*kz**2+2.*W('22xy')*kx*ky+2.*W('22yz')*ky*kz+2.*W('22xz')*kz*kx) - 0.5*W22_L0
+                    
+            W22_L4=35./8.*(W('22xxxx')*kx**4 +W('22yyyy')*ky**4+W('22zzzz')*kz**4 \
+                +4.*W('22xxxy')*kx**3*ky +4.*W('22xxxz')*kx**3*kz +4.*W('22xyyy')*ky**3*kx \
+                +4.*W('22yyyz')*ky**3*kz +4.*W('22xzzz')*kz**3*kx +4.*W('22yzzz')*kz**3*ky \
+                +6.*W('22xxyy')*kx**2*ky**2+6.*W('22xxzz')*kx**2*kz**2+6.*W('22yyzz')*ky**2*kz**2 \
+                +12.*W('22xxyz')*kx**2*ky*kz+12.*W('22xyyz')*ky**2*kx*kz +12.*W('22xyzz')*kz**2*kx*ky) \
+                -5./2.*W22_L2 -7./8.*W22_L0
 
+            W10_L0 = W('10')
+        
+            W10_L2=1.5*(W('10xx')*kx**2+W('10yy')*ky**2+W('10zz')*kz**2+2.*W('10xy')*kx*ky+2.*W('10yz')*ky*kz+2.*W('10xz')*kz*kx) - 0.5*W10_L0
+                    
+            W10_L4=35./8.*(W('10xxxx')*kx**4 +W('10yyyy')*ky**4+W('10zzzz')*kz**4 \
+                +4.*W('10xxxy')*kx**3*ky +4.*W('10xxxz')*kx**3*kz +4.*W('10xyyy')*ky**3*kx \
+                +4.*W('10yyyz')*ky**3*kz +4.*W('10xzzz')*kz**3*kx +4.*W('10yzzz')*kz**3*ky \
+                +6.*W('10xxyy')*kx**2*ky**2+6.*W('10xxzz')*kx**2*kz**2+6.*W('10yyzz')*ky**2*kz**2 \
+                +12.*W('10xxyz')*kx**2*ky*kz+12.*W('10xyyz')*ky**2*kx*kz +12.*self.W('10xyzz')*kz**2*kx*ky) \
+                -5./2.*W10_L2 -7./8.*W10_L0
+            
+            poles = np.array([W22_L0, W22_L2, W22_L4, W10_L0, W10_L2, W10_L4])
+            self._ssc_power[:][kbin] = np.average([A * np.conj(B) for A, B in itt.product(*2*[poles])], axis=1)
 
+            if self._resume_file is not None:
+                self.save_resume_file(self._resume_file)
+                
+        self.logger.info('Computed SSC power spectra.')
 
-
-
+        return
 
     def get_window_kernels(self):
         '''Returns the window kernels to be used in the calculation of the covariance.
