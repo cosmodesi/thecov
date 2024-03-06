@@ -10,7 +10,7 @@ SurveyGeometry
     Class that represents the geometry of a survey in cut-sky.
 """
 
-import os
+import os, time
 from abc import ABC
 import itertools as itt
 import multiprocessing as mp
@@ -364,8 +364,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         self.logger.info(f'Average of {self._mesh.data_size / self.nmesh**3} objects per voxel.')
 
-        self.WinKernel = None
-        self.WinKernel_error = None
+        self._WinKernel = None
+        self._WinKernel_sum = None
 
         if resume_file is not None:
             self.set_resume_file(resume_file)
@@ -531,9 +531,11 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         array_like
             Window kernels to be used in the calculation of the covariance.
         '''
-        if self.WinKernel is None or np.isnan(self.WinKernel).any():
-            self.compute_window_kernels()
-        return self.WinKernel
+        if self._WinKernel_sum is None:
+            if self._WinKernel is None or len(self._WinKernel) < self.kbins or len(self._WinKernel[-1]) < self.kmodes_sampled:
+                self.compute_window_kernels()
+            self._WinKernel_sum = np.array([np.mean(bin, axis=0) for bin in self._WinKernel])
+        return self._WinKernel_sum
 
     def compute_window_kernels(self):
         '''Computes the window kernels to be used in the calculation of the covariance.
@@ -589,13 +591,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                 shared_w[l] = np.frombuffer(w).view(np.complex128).reshape(self.nmesh, self.nmesh, self.nmesh)
             shared_params = args[-1]
 
-        if self.WinKernel is None and self.WinKernel_error is None:
-            # Format is [k1_bins, k2_bins, P_i x P_j term, Cov_ij]
-            self.WinKernel = np.empty([self.kbins, 2*self.delta_k_max+1, 15, 6])
-            self.WinKernel.fill(np.nan)
-
-            self.WinKernel_error = np.empty([self.kbins, 2*self.delta_k_max+1, 15, 6])
-            self.WinKernel_error.fill(np.nan)
+        if self._WinKernel is None:
+                self._WinKernel = []
 
         ell_factor = lambda l1,l2: (2*l1 + 1) * (2*l2 + 1) * (2 if 0 in (l1, l2) else 1)
 
@@ -603,12 +600,14 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
             if self._resume_file is not None:
                 # Skip rows that were already computed
-                if not np.isnan(self.WinKernel[i,0,0,0]):
-                    # self.logger.debug(f'Skipping bin {i} of {self.kbins}.')
-                    continue
+                if len(self._WinKernel) > i:
+                    nmodes_left = len(km) - len(self._WinKernel[i])
+                    if nmodes_left <= 0:
+                        continue
+                    else:
+                        km = km[-nmodes_left:]
 
             init_params['k1_bin_index'] = i + self.kmin//self.dk
-            kmodes_sampled = len(km)
 
             # Splitting kmodes in chunks to be sent to each worker
             chunks = np.array_split(km, self.nthreads)
@@ -617,29 +616,32 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                          initializer=init_worker,
                          initargs=[*[self._W[w] for w in W_LABELS], init_params]) as pool:
                 
-                results = pool.map(self._compute_window_kernel_row, chunks)
+                results = np.concatenate(pool.map(self._compute_window_kernel_row, chunks))
 
-                self.WinKernel[i] = np.sum(results, axis=0) / kmodes_sampled
-
-                std_results = np.std(results, axis=0) / np.sqrt(len(results))
-                mean_results = np.mean(results, axis=0)
-                mean_results[std_results == 0] = 1
-                self.WinKernel_error[i] =  std_results / mean_results
+                # std_results = np.std(results, axis=0) / np.sqrt(len(results))
+                # mean_results = np.mean(results, axis=0)
+                # mean_results[std_results == 0] = 1
+                # self.WinKernel_error[i] =  std_results / mean_results
         
                 for k2_bin_index in range(0, 2*self.delta_k_max + 1):
                     if (k2_bin_index + i - self.delta_k_max >= self.kbins or k2_bin_index + i - self.delta_k_max < 0):
-                        self.WinKernel[i, k2_bin_index, :, :] = 0
+                        results[:, k2_bin_index, :, :] = 0
                     else:
-                        self.WinKernel[i, k2_bin_index, :, :] /= Nmodes[i + k2_bin_index - self.delta_k_max]
+                        results[:, k2_bin_index, :, :] /= Nmodes[i + k2_bin_index - self.delta_k_max]
 
-            self.WinKernel[i, ..., 0] *= ell_factor(0,0)
-            self.WinKernel[i, ..., 1] *= ell_factor(2,2)
-            self.WinKernel[i, ..., 2] *= ell_factor(4,4)
-            self.WinKernel[i, ..., 3] *= ell_factor(2,0)
-            self.WinKernel[i, ..., 4] *= ell_factor(4,0)
-            self.WinKernel[i, ..., 5] *= ell_factor(4,2)
+                results[..., 0] *= ell_factor(0,0)
+                results[..., 1] *= ell_factor(2,2)
+                results[..., 2] *= ell_factor(4,4)
+                results[..., 3] *= ell_factor(2,0)
+                results[..., 4] *= ell_factor(4,0)
+                results[..., 5] *= ell_factor(4,2)
 
-            self.WinKernel[i, ...] /= self.I('22')**2
+                results[:] /= self.I('22')**2
+                if len(self._WinKernel) > i:
+                    self._WinKernel[i] = np.concatenate([self._WinKernel[i], results])
+                else:
+                    self._WinKernel.append(results)
+
             
             if self._resume_file is not None:
                 self.save_resume_file(self._resume_file)
@@ -647,6 +649,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self.logger.info('Window kernels computed.')
 
         return self.WinKernel
+
+        return self._WinKernel
 
     @staticmethod
     def _compute_window_kernel_row(bin_kmodes):
@@ -673,7 +677,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         # Only delta_k_max points to each side of the diagonal are calculated.
         delta_k_max = shared_params['delta_k_max']
 
-        WinKernel = np.zeros((2*delta_k_max+1, 15, 6))
+        WinKernel = np.zeros((len(bin_kmodes), 2*delta_k_max+1, 15, 6))
 
         iix, iiy, iiz = np.meshgrid(*shared_params['ikgrid'], indexing='ij')
 
@@ -681,7 +685,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         k2yh = np.zeros_like(iiy)
         k2zh = np.zeros_like(iiz)
 
-        for ik1x, ik1y, ik1z, ik1r in bin_kmodes:
+        for ibin, (ik1x, ik1y, ik1z, ik1r) in enumerate(bin_kmodes):
 
             if ik1r <= 1e-10:
                 k1xh = 0
@@ -948,12 +952,12 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
                 # Iterating over terms (m,m') that will multiply P_m(k1)*P_m'(k2) in the sum
                 for term in range(15):
-                    WinKernel[delta_k + delta_k_max, term, 0] += np.sum(np.real(C00exp[term][modes]))
-                    WinKernel[delta_k + delta_k_max, term, 1] += np.sum(np.real(C22exp[term][modes]))
-                    WinKernel[delta_k + delta_k_max, term, 2] += np.sum(np.real(C44exp[term][modes]))
-                    WinKernel[delta_k + delta_k_max, term, 3] += np.sum(np.real(C20exp[term][modes]))
-                    WinKernel[delta_k + delta_k_max, term, 4] += np.sum(np.real(C40exp[term][modes]))
-                    WinKernel[delta_k + delta_k_max, term, 5] += np.sum(np.real(C42exp[term][modes]))
+                    WinKernel[ibin, delta_k + delta_k_max, term, 0] = np.sum(np.real(C00exp[term][modes]))
+                    WinKernel[ibin, delta_k + delta_k_max, term, 1] = np.sum(np.real(C22exp[term][modes]))
+                    WinKernel[ibin, delta_k + delta_k_max, term, 2] = np.sum(np.real(C44exp[term][modes]))
+                    WinKernel[ibin, delta_k + delta_k_max, term, 3] = np.sum(np.real(C20exp[term][modes]))
+                    WinKernel[ibin, delta_k + delta_k_max, term, 4] = np.sum(np.real(C40exp[term][modes]))
+                    WinKernel[ibin, delta_k + delta_k_max, term, 5] = np.sum(np.real(C42exp[term][modes]))
         
         return WinKernel
     
@@ -969,13 +973,12 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         attrs = [
             'alpha',
             'delta_k_max',
-            'kmodes_sampled',
-            'shotnoise',
-            'ngals',
+            # 'kmodes_sampled',
+            # 'shotnoise',
             'boxsize',
             'nmesh',
             'dk',
-            'kmax',
+            # 'kmax',
             'kmin',
         ]
         
@@ -987,9 +990,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             ]
 
         if window_kernels:
+            # self._WinKernel = np.array(self._WinKernel, dtype=object)
             attrs += [
-                'WinKernel',
-                'WinKernel_error',
+                '_WinKernel',
             ]
         
         self.save_attributes(filename, attrs)
@@ -1007,6 +1010,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         # Cartesian FFTs need to be loaded through the setter
         for key in self._W:
             self.set_cartesian_fft(key, self._W[key])
+
+        if self._WinKernel is not None and type(self._WinKernel) is np.ndarray:
+                self._WinKernel = self._WinKernel.tolist()
 
     def set_resume_file(self, filename):
         '''Set the resume file for the window kernels.
