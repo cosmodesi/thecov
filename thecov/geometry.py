@@ -10,7 +10,7 @@ SurveyGeometry
     Class that represents the geometry of a survey in cut-sky.
 """
 
-import os, time
+import os, time, pickle
 from abc import ABC
 import itertools as itt
 import multiprocessing as mp
@@ -32,23 +32,44 @@ W_LABELS = ['12', '12xx', '12xy', '12xz', '12yy', '12yz', '12zz', '12xxxx', '12x
 
 class Geometry(ABC):
 
-    def save_attributes(self, filename, attrs):
+    def save(self, filename):
         utils.mkdir(os.path.dirname(filename))
+        
+        ext = os.path.splitext(filename)[1]
 
-        attr_dict = {a: getattr(self, a) for a in attrs if np.any(getattr(self, a) is not None) and np.any(getattr(self, a) != {})}
+        start = time.time()
+        if ext == '.gz':
+            import gzip
+            with gzip.open(filename, 'wb') as f:
+                pickle.dump(self, f)
+        elif ext == '.xz':
+            import lzma
+            with lzma.open(filename, 'wb') as f:
+                pickle.dump(self, f)
+        else:
+            with open(filename, 'wb') as f:
+                pickle.dump(self, f)
 
-        np.savez(filename if filename.strip()[-4:] == '.npz' else f'{filename}.npz',
-                 **attr_dict)
+        self.logger.info(f'Saved to {filename} in {time.time() - start:.3f} s.')
 
-    def load_attributes(self, filename, attrs=None):
-        with np.load(filename, mmap_mode='r', allow_pickle=True) as data:
-            if attrs is None:
-                attrs = data.files
-            for a in attrs:
-                self.logger.debug(f'Loading {a} from {filename}.')
-                setattr(self, a, data[a].flat[0] if len(data[a].flat) == 1 else data[a])
+    def load(self, filename):
+        start = time.time()
 
-
+        ext = os.path.splitext(filename)[1]
+        if ext == '.gz':
+            import gzip
+            with gzip.open(filename, 'rb') as f:
+                obj = pickle.load(f)
+        elif ext == '.xz':
+            import lzma
+            with lzma.open(filename, 'rb') as f:
+                obj = pickle.load(f)
+        else:
+            with open(filename, 'rb') as f:
+                obj = pickle.load(f)
+        
+        self.__dict__.update(obj.__dict__)
+        self.logger.info(f'Loaded from {filename} in {time.time() - start:.3f} s.')
 
 class BoxGeometry(Geometry):
     '''Class that represents the geometry of a periodic cubic box.
@@ -289,8 +310,6 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         Set the k bins to be used in the calculation of the covariance.
     compute_window_kernels
         Compute the window kernels to be used in the calculation of the covariance.
-    save_resume_file(filename)
-        Save the window kernels to a file.
     load_resume_file(filename)
         Load the window kernels from a file.
 
@@ -355,7 +374,6 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self.boxsize = self._mesh.boxsize[0]
         self.nmesh = self._mesh.nmesh[0]
         assert np.allclose(self._mesh.boxsize, self.boxsize) and np.all(self._mesh.nmesh == self.nmesh)
-
         
         self.logger.info(f'Nyquist wavelength of window FFTs = {self.knyquist}.')
 
@@ -372,6 +390,15 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         else:
             self._resume_file = None
 
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        for key in ['logger', 'nthreads', 'tqdm', '_randoms', '_mesh', '_resume_file']:
+            del state[key]
+        return state
+    
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        
     @property
     def knyquist(self):
         return np.pi * self.nmesh / self.boxsize
@@ -563,7 +590,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                 pbar.update(1)
 
         if self._resume_file is not None:
-            self.save_resume_file(self._resume_file, window_kernels=False)
+            self.save(self._resume_file)
 
     def set_cartesian_fft(self, label, W):
         '''Set the FFT of the window function Wij.
@@ -710,14 +737,14 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                     self._WinKernel.append(results)
 
             
-            if self._resume_file is not None and (time.time() - last_save) > 300:
-                self.save_resume_file(self._resume_file)
+            if self._resume_file is not None and (time.time() - last_save) > 600:
+                self.save(self._resume_file)
                 last_save = time.time()
                 
         self.logger.info('Window kernels computed.')
 
         if self._resume_file is not None:
-            self.save_resume_file(self._resume_file)
+            self.save(self._resume_file)
 
         return self._WinKernel
 
@@ -1029,42 +1056,6 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                     WinKernel[ibin, delta_k + delta_k_max, term, 5] = np.sum(np.real(C42exp[term][modes]))
         
         return WinKernel
-    
-    def save_resume_file(self, filename, window_kernels=True, cartesian_ffts=True):
-        '''Save the window kernels to a file.
-
-        Parameters
-        ----------
-        filename : str
-            Name of the file to save the window kernels.'''
-        # self.logger.debug(f'Saving window kernels to {filename}.')
-
-        attrs = [
-            'alpha',
-            'delta_k_max',
-            # 'kmodes_sampled',
-            # 'shotnoise',
-            'boxsize',
-            'nmesh',
-            'dk',
-            # 'kmax',
-            'kmin',
-        ]
-        
-        if cartesian_ffts:
-            attrs += [
-                '_I',
-                '_W',
-                '_ikgrid',
-            ]
-
-        if window_kernels:
-            # self._WinKernel = np.array(self._WinKernel, dtype=object)
-            attrs += [
-                '_WinKernel',
-            ]
-        
-        self.save_attributes(filename, attrs)
 
     def load_resume_file(self, filename):
         '''Load the window kernels from a file.
@@ -1075,7 +1066,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             Name of the file to load the window kernels from.
         '''
         self.logger.info(f'Loading window kernels from {filename}.')
-        self.load_attributes(filename)
+        self.load(filename)
         # Cartesian FFTs need to be loaded through the setter
         for key in self._W:
             self.set_cartesian_fft(key, self._W[key])
@@ -1100,7 +1091,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             except FileNotFoundError:
                 self.logger.info(f'File {self._resume_file} not found. Creating resume file.')
                 utils.mkdir(os.path.dirname(self._resume_file))
-                self.save_resume_file(self._resume_file, window_kernels=False, cartesian_ffts=False)
+                self.save(self._resume_file)
 
     @classmethod
     def from_window_kernels_file(cls, filename):
