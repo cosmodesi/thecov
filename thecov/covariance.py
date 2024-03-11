@@ -243,7 +243,29 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
             self.alpha = new_alpha
 
         return new_alpha, new_shotnoise
-    
+
+    def _get_volume_shotnoise_rescaling_func(self, reference, preproc=None):
+        if preproc is None:
+            preproc = lambda x: x
+
+        @np.vectorize
+        def dlikelihood(alpha, factor):
+
+            cov_func = lambda ik,jk:                         self._get_pk_pk_term(ik, jk) + \
+                        (1 + alpha)    * self.pk_renorm    * self._get_pk_shotnoise_term(ik, jk) + \
+                        (1 + alpha)**2 * self.pk_renorm**2 * self._get_shotnoise_shotnoise_term(ik, jk)
+            
+            get_dcov_dalpha = self._build_covariance_survey(self._get_pk_shotnoise_term) + \
+              2*(1 + alpha) * self._build_covariance_survey(self._get_shotnoise_shotnoise_term)
+            
+            covariance = preproc(self._set_survey_covariance(self._build_covariance_survey(cov_func))).cov * factor
+            precision_matrix = np.linalg.inv(covariance)
+            dcov_dalpha = preproc(self._set_survey_covariance(get_dcov_dalpha)).cov * factor
+
+            return np.array([np.trace((reference.cov - covariance) @ precision_matrix @ dcov_dalpha @ precision_matrix), \
+                             np.trace((reference.cov - covariance) @ precision_matrix)])
+        
+        return dlikelihood
     
 
     def _get_volume_rescaling_func(self, reference, preproc=None):
@@ -383,7 +405,7 @@ class TrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
         config_fft = {'nu':-0.3, 'kmin':1e-5, 'kmax':1e+1, 'nmax':512}
         self.calculator.set_power_law_decomp(config_fft)
 
-        k1, k2 = self.kmin_matrices
+        k1, k2 = self.kmid_matrices
 
         ## Precompute the master integrals
         self.calculator.calc_master_integral(k1, k2)
@@ -508,7 +530,7 @@ class TrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
         ## Compute the elementary integrals Eq. (13)
         self.calculator.calc_base_integral()
 
-        k1, k2 = self.kmin_matrices
+        k1, k2 = self.kmid_matrices
 
         ## Compute the non-Gaussian covariance for each combination of multipoles
         self.set_ell_cov(0, 0, self.calculator.get_cov_T0(0, 0, k1, k2))
