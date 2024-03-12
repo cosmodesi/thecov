@@ -133,9 +133,15 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
                     (1 + self.alpha)**2 * self.pk_renorm**2 * self._get_shotnoise_shotnoise_term(ik, jk)
 
         self._set_survey_covariance(self._build_covariance_survey(func), self)
-
-        if (self.eigvals < 0).any():
-            self.logger.warning('Covariance matrix is not positive definite.')
+        eigvals = self.eigvals
+        if (eigvals < 0).any():
+            self.logger.warning(f'Covariance matrix is not positive definite. Worst of {sum(eigvals < 0)} negative eigenvalues is {eigvals.min():.2e}.')
+            # extra_modes = int(0.2*self.geometry.kmodes_sampled)
+            # self.geometry.kmodes_sampled += extra_modes
+            # self.logger.warning(f'Sampling {extra_modes} more kmodes. Total = {self.geometry.kmodes_sampled}.')
+            # self.geometry.compute_window_kernels()
+            # self._compute_covariance_survey()
+        self.logger.info(f'Condition number is {eigvals.max()/eigvals[eigvals > 0].min():.2e}.')
 
         if not np.allclose(self.cov, self.cov.T):
             self.logger.warning('Covariance matrix is not symmetric.')
@@ -243,6 +249,22 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
             self.alpha = new_alpha
 
         return new_alpha, new_shotnoise
+    
+    
+
+    def _get_volume_rescaling_func(self, reference, preproc=None):
+        if preproc is None:
+            preproc = lambda x: x
+
+        @np.vectorize
+        def dlikelihood(factor):
+            
+            covariance = preproc(self).cov * factor
+            precision_matrix = np.linalg.inv(covariance)
+
+            return np.trace((reference.cov - covariance) @ precision_matrix)
+        
+        return dlikelihood
 
     def _get_shotnoise_rescaling_func(self, reference, preproc=None):
         if preproc is None:
