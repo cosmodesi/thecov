@@ -379,8 +379,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self.boxsize = self._mesh.boxsize[0]
         self.nmesh = self._mesh.nmesh[0]
         assert np.allclose(self._mesh.boxsize, self.boxsize) and np.all(self._mesh.nmesh == self.nmesh)
-        
-        self.logger.info(f'Nyquist wavelength of window FFTs = {self.knyquist}.')
+
+        self.logger.info(f'Fundamental wavenumber of window FFTs = {self.kfun}.')
+        self.logger.info(f'Nyquist wavenumber of window FFTs = {self.knyquist}.')
 
         if self.knyquist < kmax_mask:
             self.logger.warning(f'Nyquist frequency {self.knyquist} smaller than required kmax_mask = {kmax_mask}.')
@@ -478,6 +479,10 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self._nmesh = nmesh
         self._update_ikgrid()
 
+    @property
+    def kfun(self):
+        return 2 * np.pi / self.boxsize
+
     def _update_ikgrid(self):
         self._ikgrid = []
         for _ in range(3):
@@ -522,7 +527,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         power = fourier1 * fourier2.conj()
 
         kx, ky, kz = np.meshgrid(*self._ikgrid)
-        kpower = np.sqrt(kx**2 + ky**2 + kz**2) * (2 * np.pi / self.boxsize)
+        kpower = np.sqrt(kx**2 + ky**2 + kz**2) * self.kfun
 
         if kedges is None:
             kedges = self.kedges
