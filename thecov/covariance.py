@@ -389,7 +389,7 @@ class TrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
         config_fft = {'nu':-0.3, 'kmin':1e-5, 'kmax':1e+1, 'nmax':512}
         self.calculator.set_power_law_decomp(config_fft)
 
-        k1, k2 = self.kmin_matrices
+        k1, k2 = self.kmid_matrices
 
         ## Precompute the master integrals
         self.calculator.calc_master_integral(k1, k2)
@@ -514,7 +514,7 @@ class TrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
         ## Compute the elementary integrals Eq. (13)
         self.calculator.calc_base_integral()
 
-        k1, k2 = self.kmin_matrices
+        k1, k2 = self.kmid_matrices
 
         ## Compute the non-Gaussian covariance for each combination of multipoles
         self.set_ell_cov(0, 0, self.calculator.get_cov_T0(0, 0, k1, k2))
