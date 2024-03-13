@@ -527,3 +527,13 @@ def wedges_to_multipoles(corr, muedges, ells=(0,2,4)):
         legendre = (2 * ell + 1) * (poly[1:] - poly[:-1])
         corr_ell.append(np.sum(corr * legendre, axis=-1) / (muedges[-1] - muedges[0]))
     return np.array(corr_ell)
+
+def legendre(ell):
+    if ell == 0:
+        legendre = lambda mu: 1
+    elif ell == 2:
+        legendre = lambda mu: (3*mu**2 - 1)/2
+    elif ell == 4:
+        legendre = lambda mu: (35*mu**4 - 30*mu**2 + 3)/8
+        
+    return np.vectorize(legendre)

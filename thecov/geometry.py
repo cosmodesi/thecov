@@ -348,6 +348,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self._W = {}
         self._I = {}
         self._ikgrid = None
+        self._ssc_power = None
 
         from mockfactory import Catalog
         from pypower import CatalogMesh
@@ -620,69 +621,87 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     def kbins(self):
         return len(self.kmid)
 
-    def compute_ssc_power(self, W1, W2=None):
+    def compute_ssc_power(self):
 
-        if W2 is None:
-            W2 = W1
-
-        # Calculate window FFTs if they haven't been initialized yet
-        self.W(W1)
-        self.W(W2)
-
-        # sample kmodes from each k1 bin
-
-        kmin, kmax, dk = 0.0, np.pi * self.nmesh / self.boxsize, 2 * np.pi / self.boxsize
-        kbins = int((kmax - kmin) / dk)
-
-        # HYBRID SAMPLING
-        kmodes, Nmodes = utils.sample_kmodes(kmin=kmin,
-                                             kmax=kmax, # Nyquist frequency
-                                             dk=dk, # fundamental k
-                                             boxsize=self.boxsize,
-                                             max_modes=self.kmodes_sampled,
-                                             k_shell_approx=0.1)
+        if self._ssc_power is not None:
+            return self._ssc_power
         
-        self._ssc_power = np.empty([kbins, 6])
+        self.W('22xx')
+        self.W('10xx')
+            
+        self.logger.info('Computing SSC power spectra.')
 
-        # looping through each k-bin
-        for kbin, modes in enumerate(kmodes):
-            #  quantities have shape (nmodes,)
-            ikx, iky, ikz, _ = modes.T.astype(int)
-            ikr = modes[:,-1]
-            W = lambda label: self.W(f'{label}')[ikx,iky,ikz]
-            kx, ky, kz = ikx/ikr, iky/ikr, ikz/ikr
-        
-            W22_L0 = W('22')
-        
-            W22_L2=1.5*(W('22xx')*kx**2+W('22yy')*ky**2+W('22zz')*kz**2+2.*W('22xy')*kx*ky+2.*W('22yz')*ky*kz+2.*W('22xz')*kz*kx) - 0.5*W22_L0
-                    
-            W22_L4=35./8.*(W('22xxxx')*kx**4 +W('22yyyy')*ky**4+W('22zzzz')*kz**4 \
-                +4.*W('22xxxy')*kx**3*ky +4.*W('22xxxz')*kx**3*kz +4.*W('22xyyy')*ky**3*kx \
-                +4.*W('22yyyz')*ky**3*kz +4.*W('22xzzz')*kz**3*kx +4.*W('22yzzz')*kz**3*ky \
-                +6.*W('22xxyy')*kx**2*ky**2+6.*W('22xxzz')*kx**2*kz**2+6.*W('22yyzz')*ky**2*kz**2 \
-                +12.*W('22xxyz')*kx**2*ky*kz+12.*W('22xyyz')*ky**2*kx*kz +12.*W('22xyzz')*kz**2*kx*ky) \
+        ikx, iky, ikz = np.meshgrid(*self._ikgrid)
+        ikr = np.sqrt(ikx**2 + iky**2 + ikz**2)
+        ikr[ikr == 0] = np.inf
+
+        kx, ky, kz = ikx/ikr, iky/ikr, ikz/ikr
+        kr = ikr * self.kfun
+    
+        W22_L0 = self.W('22')
+    
+        W22_L2 = 1.5*(self.W('22xx')*kx**2+self.W('22yy')*ky**2+self.W('22zz')*kz**2+2.*self.W('22xy')*kx*ky+2.*self.W('22yz')*ky*kz+2.*self.W('22xz')*kz*kx) - 0.5*W22_L0
+                
+        W22_L4 = 35./8.*(self.W('22xxxx')*kx**4 +self.W('22yyyy')*ky**4+self.W('22zzzz')*kz**4 \
+                +4.*self.W('22xxxy')*kx**3*ky +4.*self.W('22xxxz')*kx**3*kz +4.*self.W('22xyyy')*ky**3*kx \
+                +4.*self.W('22yyyz')*ky**3*kz +4.*self.W('22xzzz')*kz**3*kx +4.*self.W('22yzzz')*kz**3*ky \
+                +6.*self.W('22xxyy')*kx**2*ky**2+6.*self.W('22xxzz')*kx**2*kz**2+6.*self.W('22yyzz')*ky**2*kz**2 \
+                +12.*self.W('22xxyz')*kx**2*ky*kz+12.*self.W('22xyyz')*ky**2*kx*kz +12.*self.W('22xyzz')*kz**2*kx*ky) \
                 -5./2.*W22_L2 -7./8.*W22_L0
 
-            W10_L0 = W('10')
-        
-            W10_L2=1.5*(W('10xx')*kx**2+W('10yy')*ky**2+W('10zz')*kz**2+2.*W('10xy')*kx*ky+2.*W('10yz')*ky*kz+2.*W('10xz')*kz*kx) - 0.5*W10_L0
-                    
-            W10_L4=35./8.*(W('10xxxx')*kx**4 +W('10yyyy')*ky**4+W('10zzzz')*kz**4 \
-                +4.*W('10xxxy')*kx**3*ky +4.*W('10xxxz')*kx**3*kz +4.*W('10xyyy')*ky**3*kx \
-                +4.*W('10yyyz')*ky**3*kz +4.*W('10xzzz')*kz**3*kx +4.*W('10yzzz')*kz**3*ky \
-                +6.*W('10xxyy')*kx**2*ky**2+6.*W('10xxzz')*kx**2*kz**2+6.*W('10yyzz')*ky**2*kz**2 \
-                +12.*W('10xxyz')*kx**2*ky*kz+12.*W('10xyyz')*ky**2*kx*kz +12.*self.W('10xyzz')*kz**2*kx*ky) \
-                -5./2.*W10_L2 -7./8.*W10_L0
-            
-            poles = np.array([W22_L0, W22_L2, W22_L4, W10_L0, W10_L2, W10_L4])
-            self._ssc_power[:][kbin] = np.average([A * np.conj(B) for A, B in itt.product(*2*[poles])], axis=1)
-
-            if self._resume_file is not None:
-                self.save_resume_file(self._resume_file)
+        W10_L0 = self.W('10')
+    
+        W10_L2 = 1.5*(self.W('10xx')*kx**2+self.W('10yy')*ky**2+self.W('10zz')*kz**2+2.*self.W('10xy')*kx*ky+2.*self.W('10yz')*ky*kz+2.*self.W('10xz')*kz*kx) - 0.5*W10_L0
                 
-        self.logger.info('Computed SSC power spectra.')
+        W10_L4 = 35./8.*(self.W('10xxxx')*kx**4 +self.W('10yyyy')*ky**4+self.W('10zzzz')*kz**4 \
+                +4.*self.W('10xxxy')*kx**3*ky +4.*self.W('10xxxz')*kx**3*kz +4.*self.W('10xyyy')*ky**3*kx \
+                +4.*self.W('10yyyz')*ky**3*kz +4.*self.W('10xzzz')*kz**3*kx +4.*self.W('10yzzz')*kz**3*ky \
+                +6.*self.W('10xxyy')*kx**2*ky**2+6.*self.W('10xxzz')*kx**2*kz**2+6.*self.W('10yyzz')*ky**2*kz**2 \
+                +12.*self.W('10xxyz')*kx**2*ky*kz+12.*self.W('10xyyz')*ky**2*kx*kz +12.*self.W('10xyzz')*kz**2*kx*ky) \
+                -5./2.*W10_L2 -7./8.*W10_L0
+        
+        self.logger.info('Binning SSC power spectra.')
 
-        return
+        ibin = np.digitize(kr, self.kedges)
+        
+        poles = np.array([W22_L0, W22_L2, W22_L4, W10_L0, W10_L2, W10_L4])
+        self._ssc_power = np.array([ [(A * np.conj(B))[ibin == i].mean() for A, B in itt.combinations_with_replacement(poles, 2)] \
+                                    for i in self.tqdm(range(1, self.kbins+1),
+                                                       desc='Averaging SSC power spectra over bins.',
+                                                       total=self.kbins)]).real.T
+        kavg = np.array([ kr[ibin == i].mean() for i in range(1, self.kbins+1)])
+        kavg[0] = 0
+
+        # Add kavg to the last row
+        self._ssc_power = np.concatenate([self._ssc_power, kavg[:,None]], axis=0)
+
+        # removing shotnoise from mono x monopole
+        self._ssc_power[0] -= self.I('34') # W22xW22
+        self._ssc_power[3] -= self.I('22') # W22xW10
+        self._ssc_power[15] -= self.I('10') # W10xW10
+
+        for i, (w1,w2) in enumerate(itt.combinations_with_replacement(['22', '22', '22', '10', '10', '10'], 2)):
+            self._ssc_power[i] /= self.I(w1)*self.I(w2) # normalizing
+
+        for i, (l1,l2) in enumerate(itt.combinations_with_replacement(2*[0,2,4], 2)):
+            self._ssc_power[i] *= (2*l1 + 1)*(2*l2 + 1)
+            # Manually setting k=0 modes
+            self._ssc_power[i,0] = 1 if l1 == l2 else 0
+
+        if self._resume_file is not None:
+            self.save_resume_file(self._resume_file)
+            
+        self.logger.info('SSC power spectra computed.')
+
+        return self._ssc_power
+    
+    def get_ssc_power_interpolators(self):
+        if self._ssc_power is None:
+            self.compute_ssc_power()
+
+        from scipy.interpolate import InterpolatedUnivariateSpline
+        kavg = self._ssc_power[-1]
+        return [InterpolatedUnivariateSpline(kavg, Pwin) for Pwin in self._ssc_power[:-1]]
 
     def get_window_kernels(self):
         '''Returns the window kernels to be used in the calculation of the covariance.
