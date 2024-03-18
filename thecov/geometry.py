@@ -420,7 +420,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         if f'W{w}' not in self._randoms.columns():
             self._randoms[f'W{w}'] = self._randoms['NZ']**(
-                int(w[0])-1) * self._randoms['WEIGHT_FKP']**int(w[1])*self._randoms[f'WEIGHT']
+                int(w[0])-1) * self._randoms['WEIGHT_FKP']**int(w[1]) * self._randoms[f'WEIGHT'] * self.alpha
 
         return self._randoms[f'W{w}']
 
@@ -440,7 +440,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         '''
         w = W.lower().replace("i", "").replace("w", "")
         self.W_cat(w)
-        return (self._randoms[f'W{w}'].sum() * self.alpha).tolist()
+        return (self._randoms[f'W{w}'].sum()).tolist()
 
     def W(self, W):
         '''Returns FFT of the window function Wij. If it has not been computed yet, it is computed.
@@ -482,7 +482,6 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
     def get_mesh(self,label):
         weights = self.W_cat(label) if 'w' in label.lower() else self.randoms[label]
-        weights *= self.alpha
         return self._mesh.clone(data_positions=self.randoms['POSITION'],
                                  data_weights=weights,
                                  position_type='pos',
