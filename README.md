@@ -2,9 +2,7 @@
 
 Module with general tools to calculate theoretical covariance matrices of power spectrum multipoles in arbitrary geometries based on [CovaPT](https://github.com/JayWadekar/CovaPT/) ([Wadekar & Scoccimarro 2019](http://arxiv.org/abs/1910.02914)) and [PowerSpecCovFFT](https://github.com/archaeo-pteryx/PowerSpecCovFFT) ([Kobayashi 2023](https://arxiv.org/abs/2308.08593)). Tree-level perturbation theory is used to estimate the connected term, including super-sample covariance (beat coupling + local averaging terms).
 
-Under active development.
-
-Version 1.0 will be released with the DESI 2024 power spectrum analytic covariance paper.
+Under active development, testing and validation. Version 1.0 will be released with the DESI 2024 power spectrum analytical covariance paper.
 
 ## Installation
 
@@ -35,7 +33,7 @@ covariance.compute_covariance()
 # functions like covariance.get_ell_cov(ell1, ell2) to output what you need.
 ```
 
-### Gaussian covariance in cut sky geometry
+### Gaussian covariance in sky geometry
 
 ```python
 
