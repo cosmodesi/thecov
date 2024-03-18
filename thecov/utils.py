@@ -537,3 +537,12 @@ def legendre(ell):
         legendre = lambda mu: (35*mu**4 - 30*mu**2 + 3)/8
         
     return np.vectorize(legendre)
+
+def limit(iterable, count):
+    """
+    Limit number of iterated elements from an iterable.
+    count -- is the maximum number of elements to iterate through
+    """
+    while count > 0:
+        yield next(iterable)
+        count -= 1

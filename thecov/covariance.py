@@ -585,7 +585,7 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
             from scipy.interpolate import InterpolatedUnivariateSpline
             self.pk_linear = InterpolatedUnivariateSpline(k, pk_linear)
             if dPk is None:
-                dPk = self.pk_linear.derivative(kmid)
+                dPk = self.pk_linear.derivative()(kmid)
 
         self._dlnPk = dPk * kmid/self.pk_linear(kmid)
     
@@ -663,20 +663,20 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
             Covariance matrix.
         '''
 
-        self.logger.debug(f'Calculating the RMS fluctuations of super-survey modes.')
+        self.logger.debug(f'Calculating the variance of super-survey modes.')
 
+        # Convolving the window function power with linear power spectrum to
+        # obtain the variance of super-survey modes. Done for all multipole combinations.
         from scipy.integrate import quad
         sigmas = np.array([4 * np.pi / (2 * np.pi)**3 * quad(lambda k: k**2*self.pk_linear(k)*Pwin(k), 0, self.geometry.kmax)[0] \
-                           for Pwin in self.geometry.get_ssc_power_interpolators()])
+                           for Pwin in self.geometry.get_window_power_interpolators()])
         
         # indices of respective values from sigmas
         sigma22x22 = [[0,  1,  2],
                       [1,  6,  7],
                       [2,  7, 11]]
 
-        sigma10x10 = [[15, 16, 17],
-                      [16, 18, 19],
-                      [17, 19, 20]]
+        sigma10x10 = 15
 
         sigma22x10 = [[ 3,  4,  5],
                       [ 8,  9, 10],
@@ -687,8 +687,9 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
         sigma10x10 = sigmas[sigma10x10]
         sigma22x10 = sigmas[sigma22x10]
 
-        assert np.all(sigma22x22 == sigma22x22.T)
-        assert np.all(sigma10x10 == sigma10x10.T)
+        self.sigma22x22 = sigma22x22
+        self.sigma10x10 = sigma10x10
+        self.sigma22x10 = sigma22x10
 
         b1 = self.params['b1']
         b2 = self.params['b2']
@@ -708,34 +709,31 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
 
         # same shape as Z12
         # in einsum, lmij are used for ells, kq are used for k
-        Plin_Z12 = np.einsum('k,lmk->lmk', Plin, Z12)
-
-        # covBC = 1/4. * Plin_Z12 @ sigma22x22 @ Plin_Z12.transpose(2,0,1)
+        response_function = np.einsum('k,lmk->lmk', Plin, Z12)
 
         # shapes are (ell_kernel, ell_legendre, k), (ell, ell), (ell_kernel, ell_legendre, k)
         # final shape is (l1, l2, k1, k2)
-        covBC = 1/4. * np.einsum('lik,ij,mjq->lmkq', Plin_Z12, sigma22x22, Plin_Z12)
+        covBC = 1/4. * np.einsum('lik,ij,mjq->lmkq', response_function, sigma22x22, response_function)
 
         self.covBC = covBC
 
-        # shape is (ell)
-        rsd = np.array([
-            1 + 2/3*be + 1/5 *be**2,
-                4/3*be + 4/7 *be**2,
-                         8/35*be**2,
+        # Kaiser approximation used for large-scale modes in redshift space
+        # shape is (ell, k)
+        P_kaiser = np.array([
+            (1 + 2/3*be + 1/5 *be**2) * Plin,
+                (4/3*be + 4/7 *be**2) * Plin,
+                         (8/35*be**2) * Plin,
         ])
 
         # shape is (ell_kernel, ell, k),  (ell, ell), (ell) -> (ell_kernel, k)
         LA_term  = 1/4. * np.einsum('lik,ij,j->lk', Z12, sigma22x10, Z1)
-        # shape is (ell) outer (k) = (ell, k)
-        LA_term += self.geometry.I('32')/self.geometry.I('22')/self.geometry.I('10')*b2/b1**2 * np.outer(rsd, Plin)
-        # shape is (ell,1)
-        LA_term += 2/self.geometry.I('10') * rsd[:,None]
+        # shape is (ell, k)
+        LA_term += b2 * P_kaiser/b1**2 * self.geometry.I('32')/self.geometry.I('22')/self.geometry.I('10')
 
         # output shape is (lmkq) = (l1,l2,k1,k2) final shape of covariance
-        covLA = -np.einsum('lk,m,k,q->lmkq', LA_term, rsd, Plin, Plin)
-        covLA -= np.einsum('lk,m,k,q->mlqk', LA_term, rsd, Plin, Plin) # symmetric of the above
-        covLA += np.einsum('l ,m,k,q->lmkq', rsd,     rsd, Plin, Plin) * (sigma10x10.sum() + 1/self.geometry.I('10'))
+        covLA  = np.einsum('lk,mq  ->lmkq', P_kaiser, P_kaiser) * sigma10x10
+        covLA -= np.einsum('lk,q,mq->lmkq', P_kaiser, Plin, LA_term)
+        covLA -= np.einsum('lk,q,mq->mlqk', P_kaiser, Plin, LA_term) # symmetric of the above
 
         self.covLA = covLA
 
