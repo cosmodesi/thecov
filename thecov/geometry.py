@@ -339,7 +339,6 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         self._W = {}
         self._I = {}
-        self._ikgrid = None
         self._window_power = None
 
         from mockfactory import Catalog
@@ -464,26 +463,19 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             else:
                 self.set_cartesian_fft(f'W{w}', self.get_fft(f'W{w}'))
         return self._W[w]
-    
-    @property
-    def nmesh(self):
-        return self._nmesh
-    
-    @nmesh.setter
-    def nmesh(self, nmesh):
-        self._nmesh = nmesh
-        self._update_ikgrid()
 
     @property
     def kfun(self):
         return 2 * np.pi / self.boxsize
 
-    def _update_ikgrid(self):
-        self._ikgrid = []
+    @property
+    def ikgrid(self):
+        ikgrid = []
         for _ in range(3):
             iik = np.arange(self.nmesh)
             iik[iik >= self.nmesh // 2] -= self.nmesh
-            self._ikgrid.append(iik)
+            ikgrid.append(iik)
+        return ikgrid
 
     def get_mesh(self,label):
         weights = self.W_cat(label) if 'w' in label.lower() else self.randoms[label]
@@ -520,7 +512,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         power = fourier1 * fourier2.conj()
 
-        kx, ky, kz = np.meshgrid(*self._ikgrid)
+        kx, ky, kz = np.meshgrid(*self.ikgrid)
         kpower = np.sqrt(kx**2 + ky**2 + kz**2) * self.kfun
 
         if kedges == 'self':
@@ -632,7 +624,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             
         self.logger.info('Computing window power spectra.')
 
-        ikx, iky, ikz = np.meshgrid(*self._ikgrid)
+        ikx, iky, ikz = np.meshgrid(*self.ikgrid)
         ikr = np.sqrt(ikx**2 + iky**2 + ikz**2)
         ikr[ikr == 0] = np.inf
 
@@ -772,7 +764,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             'boxsize': self.boxsize,
             'dk': self.dk,
             'nmesh': self.nmesh,
-            'ikgrid': self._ikgrid,
+            'ikgrid': self.ikgrid,
             'delta_k_max': self.delta_k_max,
         }
 
