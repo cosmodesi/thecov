@@ -290,8 +290,6 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         Size of the box.
     boxpad : float
         Box padding.
-    delta_k_max : int
-        Number of k bins to be calculated each side of the diagonal.
     kmodes_sampled : int
         Number of k modes to be sampled in the calculation of the window kernels.
     alpha : float
@@ -322,14 +320,13 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     .. [1] https://arxiv.org/abs/1910.02914
     '''
 
-    def __init__(self, randoms, nmesh=None, cellsize=None, boxsize=None, boxpad=1.2, kmax_mask=0.04, delta_k_max=3, kmodes_sampled=10000, alpha=1.0, nthreads=None, resume_file=None, tqdm=shell_tqdm, **kwargs):
+    def __init__(self, randoms, nmesh=None, cellsize=None, boxsize=None, boxpad=1.2, kmax_mask=0.04, kmodes_sampled=10000, alpha=1.0, nthreads=None, resume_file=None, tqdm=shell_tqdm, **kwargs):
 
         base.FourierBinned.__init__(self)
 
         self.logger = logging.getLogger('SurveyGeometry')
 
         self.alpha = alpha
-        self.delta_k_max = delta_k_max
         self.kmodes_sampled = kmodes_sampled
 
         self._shotnoise = None
@@ -376,9 +373,10 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         assert np.allclose(self._mesh.boxsize, self.boxsize) and np.all(self._mesh.nmesh == self.nmesh)
         
         self.logger.info(f'Nyquist wavelength of window FFTs = {self.knyquist}.')
+        self.logger.info(f'Fundamental wavelength of window FFTs = {self.kfun}.')
 
         if self.knyquist < kmax_mask:
-            self.logger.warning(f'Nyquist frequency {self.knyquist} smaller than required kmax_mask = {kmax_mask}.')
+            self.logger.warning(f'Nyquist wavelength {self.knyquist} smaller than required kmax_mask = {kmax_mask}.')
 
         self.logger.info(f'Average of {self._mesh.data_size / self.nmesh**3} objects per voxel.')
 
@@ -402,6 +400,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     @property
     def knyquist(self):
         return np.pi * self.nmesh / self.boxsize
+    @property
+    def kfun(self):
+        return 2 * np.pi / self.boxsize
 
     def W_cat(self, W):
         '''Adds a column to the random catalog with the window function Wij.
@@ -502,7 +503,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         from pypower import MeshFFTPower
         return MeshFFTPower(mesh1=mesh1, mesh2=mesh2, *args, **kwargs)
         
-    def compute_power(self, label1, label2=None, kedges=None):
+    def compute_power(self, label1, label2=None, kedges='auto'):
         if label2 is None:
             label2 = label1
 
@@ -518,8 +519,10 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         kx, ky, kz = np.meshgrid(*self._ikgrid)
         kpower = np.sqrt(kx**2 + ky**2 + kz**2) * (2 * np.pi / self.boxsize)
 
-        if kedges is None:
+        if kedges == 'self':
             kedges = self.kedges
+        elif kedges == 'auto':
+            kedges = np.arange(0, self.knyquist + self.kfun/2, self.kfun)
 
         ibin = np.digitize(kpower, kedges)
 
@@ -626,6 +629,10 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         if self.WinKernel is None or np.isnan(self.WinKernel).any():
             self.compute_window_kernels()
         return self.WinKernel
+    
+    @property
+    def delta_k_max(self):
+        return self.nmesh // 2 - 1
 
     def compute_window_kernels(self):
         '''Computes the window kernels to be used in the calculation of the covariance.
