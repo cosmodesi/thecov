@@ -29,7 +29,6 @@ __all__ = ['BoxGeometry', 'SurveyGeometry']
 W_LABELS = ['12', '12xx', '12xy', '12xz', '12yy', '12yz', '12zz', '12xxxx', '12xxxy', '12xxxz', '12xxyy', '12xxyz', '12xxzz', '12xyyy', '12xyyz', '12xyzz', '12xzzz', '12yyyy', '12yyyz', '12yyzz', '12yzzz',
             '12zzzz', '22', '22xx', '22xy', '22xz', '22yy', '22yz', '22zz', '22xxxx', '22xxxy', '22xxxz', '22xxyy', '22xxyz', '22xxzz', '22xyyy', '22xyyz', '22xyzz', '22xzzz', '22yyyy', '22yyyz', '22yyzz', '22yzzz', '22zzzz']
 
-
 class Geometry(ABC):
 
     def save(self, filename):
@@ -341,6 +340,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self._W = {}
         self._I = {}
         self._ikgrid = None
+        self._window_power = None
 
         from mockfactory import Catalog
         from pypower import CatalogMesh
@@ -371,9 +371,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self.boxsize = self._mesh.boxsize[0]
         self.nmesh = self._mesh.nmesh[0]
         assert np.allclose(self._mesh.boxsize, self.boxsize) and np.all(self._mesh.nmesh == self.nmesh)
-        
-        self.logger.info(f'Nyquist wavelength of window FFTs = {self.knyquist}.')
-        self.logger.info(f'Fundamental wavelength of window FFTs = {self.kfun}.')
+
+        self.logger.info(f'Fundamental wavenumber of window FFTs = {self.kfun}.')
+        self.logger.info(f'Nyquist wavenumber of window FFTs = {self.knyquist}.')
 
         if self.knyquist < kmax_mask:
             self.logger.warning(f'Nyquist wavelength {self.knyquist} smaller than required kmax_mask = {kmax_mask}.')
@@ -441,7 +441,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         '''
         w = W.lower().replace("i", "").replace("w", "")
         self.W_cat(w)
-        return (self._randoms[f'W{w}'].sum()).tolist()
+        return self._randoms[f'W{w}'].sum().tolist()
 
     def W(self, W):
         '''Returns FFT of the window function Wij. If it has not been computed yet, it is computed.
@@ -473,6 +473,10 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     def nmesh(self, nmesh):
         self._nmesh = nmesh
         self._update_ikgrid()
+
+    @property
+    def kfun(self):
+        return 2 * np.pi / self.boxsize
 
     def _update_ikgrid(self):
         self._ikgrid = []
@@ -517,7 +521,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         power = fourier1 * fourier2.conj()
 
         kx, ky, kz = np.meshgrid(*self._ikgrid)
-        kpower = np.sqrt(kx**2 + ky**2 + kz**2) * (2 * np.pi / self.boxsize)
+        kpower = np.sqrt(kx**2 + ky**2 + kz**2) * self.kfun
 
         if kedges == 'self':
             kedges = self.kedges
@@ -617,6 +621,98 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     @property
     def kbins(self):
         return len(self.kmid)
+
+    def compute_window_power(self):
+
+        if self._window_power is not None:
+            return self._window_power
+        
+        self.W('22xx')
+        self.W('10xx')
+            
+        self.logger.info('Computing window power spectra.')
+
+        ikx, iky, ikz = np.meshgrid(*self._ikgrid)
+        ikr = np.sqrt(ikx**2 + iky**2 + ikz**2)
+        ikr[ikr == 0] = np.inf
+
+        kx, ky, kz = ikx/ikr, iky/ikr, ikz/ikr
+        kr = ikr * self.kfun
+    
+        W22_L0 = self.W('22')
+    
+        W22_L2 = 1.5*(self.W('22xx')*kx**2+self.W('22yy')*ky**2+self.W('22zz')*kz**2+2.*self.W('22xy')*kx*ky+2.*self.W('22yz')*ky*kz+2.*self.W('22xz')*kz*kx) - 0.5*W22_L0
+                
+        W22_L4 = 35./8.*(self.W('22xxxx')*kx**4 +self.W('22yyyy')*ky**4+self.W('22zzzz')*kz**4 \
+                +4.*self.W('22xxxy')*kx**3*ky +4.*self.W('22xxxz')*kx**3*kz +4.*self.W('22xyyy')*ky**3*kx \
+                +4.*self.W('22yyyz')*ky**3*kz +4.*self.W('22xzzz')*kz**3*kx +4.*self.W('22yzzz')*kz**3*ky \
+                +6.*self.W('22xxyy')*kx**2*ky**2+6.*self.W('22xxzz')*kx**2*kz**2+6.*self.W('22yyzz')*ky**2*kz**2 \
+                +12.*self.W('22xxyz')*kx**2*ky*kz+12.*self.W('22xyyz')*ky**2*kx*kz +12.*self.W('22xyzz')*kz**2*kx*ky) \
+                -5./2.*W22_L2 -7./8.*W22_L0
+
+        W10_L0 = self.W('10')
+    
+        W10_L2 = 1.5*(self.W('10xx')*kx**2+self.W('10yy')*ky**2+self.W('10zz')*kz**2+2.*self.W('10xy')*kx*ky+2.*self.W('10yz')*ky*kz+2.*self.W('10xz')*kz*kx) - 0.5*W10_L0
+                
+        W10_L4 = 35./8.*(self.W('10xxxx')*kx**4 +self.W('10yyyy')*ky**4+self.W('10zzzz')*kz**4 \
+                +4.*self.W('10xxxy')*kx**3*ky +4.*self.W('10xxxz')*kx**3*kz +4.*self.W('10xyyy')*ky**3*kx \
+                +4.*self.W('10yyyz')*ky**3*kz +4.*self.W('10xzzz')*kz**3*kx +4.*self.W('10yzzz')*kz**3*ky \
+                +6.*self.W('10xxyy')*kx**2*ky**2+6.*self.W('10xxzz')*kx**2*kz**2+6.*self.W('10yyzz')*ky**2*kz**2 \
+                +12.*self.W('10xxyz')*kx**2*ky*kz+12.*self.W('10xyyz')*ky**2*kx*kz +12.*self.W('10xyzz')*kz**2*kx*ky) \
+                -5./2.*W10_L2 -7./8.*W10_L0
+        
+        self.logger.info('Binning window power spectra.')
+
+        ibin = np.digitize(kr, self.kedges)
+        
+        poles = np.array([W22_L0, W22_L2, W22_L4, W10_L0, W10_L2, W10_L4])
+
+        # Computing power spectra
+        # stopping at 15 because we only need monopole for W10xW10
+        power = [ A*np.conj(B) for A, B in self.tqdm(utils.limit(itt.combinations_with_replacement(poles, 2), 16), total=16,
+                                                     desc='Calculating power.' )]
+        power.append(kr) # to compute kavg
+
+        power = self.tqdm(power, total=17,
+                         desc='Averaging power spectra over bins.')
+        
+        self._window_power = np.array([[p[ibin == i].real.mean() for i in range(1, self.kbins+1)] for p in power])
+
+        # removing shotnoise from mono x monopole
+        self._window_power[0]  -= self.I('34') * self.alpha # W22xW22
+        self._window_power[3]  -= self.I('22') * self.alpha # W22xW10
+        # not removing from W10xW10
+        # self._window_power[15] -= self.I('10') * self.alpha # W10xW10
+
+        for i, (w1,w2) in enumerate(itt.combinations_with_replacement(['22', '22', '22', '10', '10', '10'], 2)):
+            if i > 15:
+                break
+            self._window_power[i] /= self.I(w1)*self.I(w2) # normalizing
+
+        for i, (l1,l2) in utils.limit(enumerate(itt.combinations_with_replacement(2*[0,2,4], 2)), 16):
+            if i > 15:
+                break
+            self._window_power[i] *= (2*l1 + 1)*(2*l2 + 1)
+            # Manually setting k=0 modes
+            self._window_power[i,0] = 1 if l1 == l2 else 0
+        # kavg of first bin
+        if np.isnan(self._window_power[-1,0]):
+            self._window_power[-1,0] = 0
+
+        if self._resume_file is not None:
+            self.save_resume_file(self._resume_file)
+            
+        self.logger.info('Window power spectra computed.')
+
+        return self._window_power
+    
+    def get_window_power_interpolators(self):
+        if self._window_power is None:
+            self.compute_window_power()
+
+        from scipy.interpolate import InterpolatedUnivariateSpline
+        kavg = self._window_power[-1]
+        return [InterpolatedUnivariateSpline(kavg, Pwin) for Pwin in self._window_power[:-1]]
 
     def get_window_kernels(self):
         '''Returns the window kernels to be used in the calculation of the covariance.
