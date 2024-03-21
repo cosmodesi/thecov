@@ -9,72 +9,101 @@ Under active development, testing and validation. Version 1.0 will be released w
 ```sh
 pip install git+https://github.com/cosmodesi/thecov
 ```
-## Usage examples
-
-### Gaussian covariance in cubic box geometry
+## Usage
 
 ```python
-from thecov import BoxGeometry, GaussianCovariance
+import thecov.geometry
+import thecov.covariance
 
-geometry = BoxGeometry(volume=2000**3, nbar=1e-3)
+# Libraries to handle basic cosmology and catalog manipulations
+import mockfactory.Catalog
+import mockfactory.utils
+import cosmoprimo
 
-covariance = GaussianCovariance(geometry)
-covariance.set_kbins(kmin=0, kmax=0.25, dk=0.005)
-
-# Load input power spectra (P0, P2, P4) for the Gaussian covariance
-
-covariance.set_pk(P0, 0, has_shotnoise=False)
-covariance.set_pk(P2, 2)
-covariance.set_pk(P4, 4)
-
-covariance.compute_covariance()
-
-# Covariance object has properties covariance.cov, covariance.cor, and
-# functions like covariance.get_ell_cov(ell1, ell2) to output what you need.
-```
-
-### Gaussian covariance in sky geometry
-
-```python
-
-from cosmoprimo.fiducial import DESI
-from mockfactory import Catalog, utils
-
-from thecov import SurveyGeometry, GaussianCovariance
-
-# Define cosmology used in coordinate transformations
-cosmo = DESI()
+# Define fiducial cosmology used in calculations
+cosmo = cosmoprimo.fiducial.DESI()
 
 # Load random catalog
-randoms = Catalog.read(f'your_catalog.fits')
+randoms = mockfactory.Catalog.read(f'your_catalog.fits')
 
 # Any catalog filtering/manipulations should go here
 
 # Should define FKP weights column with this name
 randoms['WEIGHT_FKP'] = 1./(1. + 1e4*randoms['NZ'])  # FKP weights are optional
 
-# Convert sky coordinates to cartesian
-randoms['POSITION'] = utils.sky_to_cartesian(cosmo.comoving_radial_distance(randoms['Z']), randoms['RA'], randoms['DEC'], degree=Truee)
+# Convert sky coordinates to cartesian using fiducial cosmology
+randoms['POSITION'] = mockfactory.utils.sky_to_cartesian(
+                          cosmo.comoving_radial_distance(randoms['Z']),
+                          randoms['RA'],
+                          randoms['DEC'],
+                          degree=True)
 
 # Create geometry object to be used in covariance calculation
-geometry = SurveyGeometry(randoms, nmesh=64, boxpad=1.2, alpha=1. / 10., kmodes_sampled=2000)
+geometry = thecov.geometry.SurveyGeometry(
+                            randoms,
+                            kmax_mask=0.02, # Nyquist wavelength of window FFTs
+                            boxpad=1.2, # box size / inferred size from catalog
+                            alpha=0.1, # N_galaxies / N_randoms
+                            kmodes_sampled=10000, # max N samples used in integ
+                           )
 
-covariance = GaussianCovariance(geometry)
-covariance.set_kbins(kmin=0, kmax=0.4, dk=0.005)
+kmin, kmax, dk = 0.0, 0.5, 0.005
 
-covariance.set_shotnoise(shotnoise) # optional but recommended
+gaussian = thecov.covariance.GaussianCovariance(geometry)
+gaussian.set_kbins(kmin, kmax, dk)
+gaussian.set_shotnoise(shotnoise) # optional but recommended, fixes the P(k)
+                                  # estimator normalization
 
 # Load input power spectra (P0, P2, P4) for the Gaussian covariance
 
-covariance.set_pk(P0, 0, has_shotnoise=False)
-covariance.set_pk(P2, 2)
-covariance.set_pk(P4, 4)
+gaussian.set_galaxy_pk_multipole(P0, 0, has_shotnoise=False)
+gaussian.set_galaxy_pk_multipole(P2, 2)
+gaussian.set_galaxy_pk_multipole(P4, 4)
 
-covariance.compute_covariance()
+gaussian.compute_covariance()
+
+# Galaxy bias b1 and effective redshift zeff
+b1, zeff = 2.0, 0.5
+
+t0 = thecov.covariance.RegularTrispectrumCovariance(geometry)
+t0.set_kbins(kmin, kmax, dk)
+
+plin = cosmo.get_fourier().pk_interpolator()
+
+t0.set_linear_matter_pk(np.vectorize(lambda k: plin.pk_kz(k, zeff)))
+
+# Other bias parameters will be automatically determined
+# assuming local lagrangian approximation if not given
+t0.set_params(fgrowth=cosmo.growth_rate(zeff), b1=b1)
+t0.compute_covariance()
+
+# Creating a new geometry object with finer grid for SSC calcs.
+# Larger boxpad yields smaller k-fundamental.
+geometry_ssc = thecov.geometry.SurveyGeometry(randoms,
+                                              kmax_mask=0.1,
+                                              boxpad=2.0,
+                                              alpha=0.1)
+ssc = thecov.covariance.SuperSampleCovariance(geometry_ssc)
+ssc.set_kbins(kmin, kmax, dk)
+ssc.set_linear_matter_pk(np.vectorize(lambda k: plin.pk_kz(k, zeff)))
+ssc.set_params(fgrowth=cosmo.growth_rate(zeff), b1=b1);
+ssc.compute_covariance()
+
+covariance = gaussian + t0 + ssc
 
 # Covariance object has functions covariance.cov, covariance.cor,
 # covariance.get_ell_cov(ell1, ell2), etc. to output what you need.
 ```
+
+### Cubic box geometry
+
+For cubic box geometry, just use the `BoxGeometry` object instead:
+
+```python
+geometry = thecov.geometry.BoxGeometry(volume=2000**3, nbar=1e-3)
+```
+
+You'll be able to compute Gaussian + $T_0$ contributions with that object. Super-sample covariance is zero in such a geometry.
 
 ## Citations
 
