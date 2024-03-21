@@ -22,7 +22,9 @@ import numpy as np
 
 from . import base, geometry, utils
 
-__all__ = ['GaussianCovariance']
+__all__ = ['GaussianCovariance',
+           'TrispectrumCovariance',
+           'SuperSampleCovariance']
 
 class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
     '''Gaussian covariance matrix of power spectrum multipoles in a given geometry.
@@ -37,7 +39,7 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         base.PowerSpectrumMultipolesCovariance.__init__(self, geometry=geometry)
         self.logger = logging.getLogger('GaussianCovariance')
 
-    def set_pk(self, pk, ell, has_shotnoise=False):
+    def set_galaxy_pk_multipole(self, pk, ell, has_shotnoise=False):
         '''Set the input power spectrum to be used for the covariance calculation.
 
         Parameters
@@ -349,11 +351,11 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         if set_shotnoise and self.geometry is not None:
             self.set_shotnoise(shotnoise = pypower.shotnoise)
 
-        self.set_pk(P0, 0, has_shotnoise=not remove_shotnoise)
-        self.set_pk(P2, 2)
-        self.set_pk(P4, 4)
+        self.set_galaxy_pk_multipole(P0, 0, has_shotnoise=not remove_shotnoise)
+        self.set_galaxy_pk_multipole(P2, 2)
+        self.set_galaxy_pk_multipole(P4, 4)
 
-class TrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
+class RegularTrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
     '''Regular trispectrum covariance matrix of power spectrum multipoles in a given geometry.
 
     Attributes
@@ -365,12 +367,12 @@ class TrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
     def __init__(self, geometry=None):
 
         base.PowerSpectrumMultipolesCovariance.__init__(self, geometry=geometry)
-        self.logger = logging.getLogger('TrispectrumCovariance')
+        self.logger = logging.getLogger('RegularTrispectrumCovariance')
 
         from powercovfft import PowerSpecCovFFT
         self.calculator = PowerSpecCovFFT()
 
-    def set_kbins(self, kmin, kmax, dk):
+    def set_kbins(self, kmin, kmax, dk, ells=(0,2,4)):
         '''Set the k-binning for the covariance matrix.
 
         Parameters
@@ -383,6 +385,7 @@ class TrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
             Width of the k bins.
         '''
 
+        self._ells = ells
         base.PowerSpectrumMultipolesCovariance.set_kbins(self, kmin, kmax, dk)
 
         ## Set the FFTLog
@@ -396,7 +399,7 @@ class TrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
 
         return self
     
-    def set_pk(self, pk_linear, k=None):
+    def set_linear_matter_pk(self, pk_linear, k=None):
         '''Set the input linear power spectrum to be used for the covariance calculation.
 
         Parameters
@@ -540,7 +543,7 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
 
         base.PowerSpectrumMultipolesCovariance.__init__(self, geometry=geometry)
         self.logger = logging.getLogger('SuperSampleCovariance')
-    def set_kbins(self, kmin, kmax, dk):
+    def set_kbins(self, kmin, kmax, dk, ells=(0,2,4)):
         '''Set the k-binning for the covariance matrix.
 
         Parameters
@@ -552,12 +555,13 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
         dk : float
             Width of the k bins.
         '''
-
+        
+        self._ells = ells
         base.PowerSpectrumMultipolesCovariance.set_kbins(self, kmin, kmax, dk)
 
         return self
     
-    def set_pk(self, pk_linear, k=None, dPk=None):
+    def set_linear_matter_pk(self, pk_linear, k=None, dPk=None):
         '''Set the input linear power spectrum to be used for the covariance calculation.
 
         Parameters
@@ -665,10 +669,14 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
 
         self.logger.debug(f'Calculating the variance of super-survey modes.')
 
+        b1 = self.params['b1']
+        b2 = self.params['b2']
+        be = self.params['f']/b1
+
         # Convolving the window function power with linear power spectrum to
         # obtain the variance of super-survey modes. Done for all multipole combinations.
         from scipy.integrate import quad
-        sigmas = np.array([4 * np.pi / (2 * np.pi)**3 * quad(lambda k: k**2*self.pk_linear(k)*Pwin(k), 0, self.geometry.kmax)[0] \
+        sigmas = b1**2 * np.array([4 * np.pi / (2 * np.pi)**3 * quad(lambda k: k**2*self.pk_linear(k)*Pwin(k), 0, self.geometry.kmax)[0] \
                            for Pwin in self.geometry.get_window_power_interpolators()])
         
         # indices of respective values from sigmas
@@ -691,21 +699,15 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
         self.sigma10x10 = sigma10x10
         self.sigma22x10 = sigma22x10
 
-        b1 = self.params['b1']
-        b2 = self.params['b2']
-        be = self.params['f']/b1
-
-        ells = (0, 2, 4)
-
         Plin = self.pk_linear(self.kmid)
 
         # shape here is (ell)
         Z1 = np.array([quad(lambda mu: utils.legendre(l)(mu) * (1 + be*mu**2), -1, 1)[0] \
-                                 for l in ells])
+                                 for l in self.ells])
         
         # shape here is (ell_kernel, ell_legendre, k)
         Z12 = np.array([self.Z12Multipoles(ell_kernel=l1, ell_legendre=l2) \
-                                  for l1 in ells for l2 in ells]).reshape(3,3,-1)
+                                  for l1 in self.ells for l2 in self.ells]).reshape(3,3,-1)
 
         # same shape as Z12
         # in einsum, lmij are used for ells, kq are used for k
@@ -739,7 +741,7 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
 
         cov = covBC + covLA
 
-        for l1, l2 in itt.combinations_with_replacement(ells, r=2):
+        for l1, l2 in itt.combinations_with_replacement(self.ells, r=2):
             self.set_ell_cov(l1, l2, cov[l1//2, l2//2])
 
         return self

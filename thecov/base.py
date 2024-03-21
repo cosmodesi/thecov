@@ -11,7 +11,12 @@ from . import geometry
 from . import utils
 import logging
 
-__all__ = ['Covariance', 'MultipoleCovariance']
+__all__ = ['Covariance',
+           'MultipoleCovariance',
+           'FourierBinned',
+           'FourierCovariance',
+           'MultipoleFourierCovariance',
+           'PowerSpectrumMultipolesCovariance']
 
 class Covariance:
     '''A class that represents a covariance matrix.
@@ -683,7 +688,7 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierCovariance):
         self.logger = logging.getLogger('MultipoleFourierCovariance')
 
     @property
-    def kmid_matrices(self):
+    def kmid_ell_matrices(self):
         kfull = np.concatenate([self.kmid for _ in self.ells])
         k1 = np.einsum('i,j->ij', kfull, np.ones_like(kfull))
         k2 = k1.T

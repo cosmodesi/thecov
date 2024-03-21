@@ -23,7 +23,8 @@ from tqdm import tqdm as shell_tqdm
 
 from . import base, utils
 
-__all__ = ['BoxGeometry', 'SurveyGeometry']
+__all__ = ['BoxGeometry',
+           'SurveyGeometry']
 
 # Window functions needed for Gaussian covariance calculation
 W_LABELS = ['12', '12xx', '12xy', '12xz', '12yy', '12yz', '12zz', '12xxxx', '12xxxy', '12xxxz', '12xxyy', '12xxyz', '12xxzz', '12xyyy', '12xyyz', '12xyzz', '12xzzz', '12yyyy', '12yyyz', '12yyzz', '12yzzz',
@@ -629,6 +630,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         ikr[ikr == 0] = np.inf
 
         kx, ky, kz = ikx/ikr, iky/ikr, ikz/ikr
+        ikr[ikr == np.inf] = 0.
         kr = ikr * self.kfun
     
         W22_L0 = self.W('22')
