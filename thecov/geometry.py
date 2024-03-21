@@ -657,6 +657,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         
         self.logger.info('Binning window power spectra.')
 
+        if not self.is_kbins_set:
+            self.set_kbins(0, self.knyquist, self.kfun)
+        
         ibin = np.digitize(kr, self.kedges)
         
         poles = np.array([W22_L0, W22_L2, W22_L4, W10_L0, W10_L2, W10_L4])
