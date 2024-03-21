@@ -23,7 +23,8 @@ from tqdm import tqdm as shell_tqdm
 
 from . import base, utils
 
-__all__ = ['BoxGeometry', 'SurveyGeometry']
+__all__ = ['BoxGeometry',
+           'SurveyGeometry']
 
 # Window functions needed for Gaussian covariance calculation
 W_LABELS = ['12', '12xx', '12xy', '12xz', '12yy', '12yz', '12zz', '12xxxx', '12xxxy', '12xxxz', '12xxyy', '12xxyz', '12xxzz', '12xyyy', '12xyyz', '12xyzz', '12xzzz', '12yyyy', '12yyyz', '12yyzz', '12yzzz',
@@ -629,6 +630,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         ikr[ikr == 0] = np.inf
 
         kx, ky, kz = ikx/ikr, iky/ikr, ikz/ikr
+        ikr[ikr == np.inf] = 0.
         kr = ikr * self.kfun
     
         W22_L0 = self.W('22')
@@ -671,8 +673,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self._window_power = np.array([[p[ibin == i].real.mean() for i in range(1, self.kbins+1)] for p in power])
 
         # removing shotnoise from mono x monopole
-        self._window_power[0]  -= self.I('34') * self.alpha # W22xW22
-        self._window_power[3]  -= self.I('22') * self.alpha # W22xW10
+        if remove_shotnoise:
+            self._window_power[0]  -= self.I('34') * self.alpha # W22xW22
+            self._window_power[3]  -= self.I('22') * self.alpha # W22xW10
         # not removing from W10xW10
         # self._window_power[15] -= self.I('10') * self.alpha # W10xW10
 
