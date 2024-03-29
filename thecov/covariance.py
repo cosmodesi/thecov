@@ -130,9 +130,9 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         '''
 
         # terms without the power spectrum have to be multiplied by its relative normalization pk_renorm
-        func = lambda ik,jk:                                   self._get_pk_pk_term(ik, jk) + \
-                    (1 + self.alpha)    * self.pk_renorm    * self._get_pk_shotnoise_term(ik, jk) + \
-                    (1 + self.alpha)**2 * self.pk_renorm**2 * self._get_shotnoise_shotnoise_term(ik, jk)
+        func = lambda ik,jk:               self._get_pk_pk_term(ik, jk) + \
+                    (1 + self.alpha)     * self._get_pk_shotnoise_term(ik, jk) + \
+                    (1 + self.alpha)**2  * self._get_shotnoise_shotnoise_term(ik, jk)
 
         self._set_survey_covariance(self._build_covariance_survey(func), self)
         eigvals = self.eigvals
@@ -163,6 +163,8 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
             # Iterate delta_k_max bins either side of the diagonal
             for kj in range(max(ki - self.geometry.delta_k_max, 0), min(ki + self.geometry.delta_k_max + 1, self.kbins)):
                 cov[ki][kj] = func(ki, kj)
+
+        cov *= (self.pk_renorm / self.geometry.I('22'))**2
 
         return cov
     
@@ -251,8 +253,6 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
             self.alpha = new_alpha
 
         return new_alpha, new_shotnoise
-    
-    
 
     def _get_volume_rescaling_func(self, reference, preproc=None):
         if preproc is None:
@@ -289,8 +289,14 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
             return np.trace((reference.cov - covariance) @ precision_matrix @ dcov_dalpha @ precision_matrix)
         
         return dlikelihood
-        
-    def load_pk(self, filename, remove_shotnoise=None, set_shotnoise=True):
+    
+    def load_pypower_file(self, filename, remove_shotnoise=None, set_shotnoise=False):
+        from pypower import PowerSpectrumMultipoles
+        self.logger.info(f'Loading power spectrum from {filename}.')
+        pypower = PowerSpectrumMultipoles.load(filename)
+        return self.load_pypower(pypower, remove_shotnoise=remove_shotnoise, set_shotnoise=set_shotnoise)
+
+    def load_pypower(self, pypower, remove_shotnoise=None, set_shotnoise=False, naverage=1):
         '''Load power spectrum from pypower file and set it to be used for the covariance calculation.
 
         Parameters
@@ -303,11 +309,6 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         set_shotnoise : bool, optional
             Whether to rescale shotnoise matching the value in the power spectrum file.
         '''
-
-        from pypower import PowerSpectrumMultipoles
-        
-        self.logger.info(f'Loading power spectrum from {filename}.')
-        pypower = PowerSpectrumMultipoles.load(filename)
 
         kmin_file, kmax_file = pypower.kedges[[0, -1]]
         dk_file = np.diff(pypower.kedges).mean()
@@ -354,6 +355,9 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         self.set_galaxy_pk_multipole(P0, 0, has_shotnoise=not remove_shotnoise)
         self.set_galaxy_pk_multipole(P2, 2)
         self.set_galaxy_pk_multipole(P4, 4)
+
+        self.alpha = pypower.attrs['sum_data_weights1']/pypower.attrs['sum_randoms_weights1']
+        self.pk_renorm = self.geometry.I('22') / pypower.wnorm * naverage
 
 class RegularTrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
     '''Regular trispectrum covariance matrix of power spectrum multipoles in a given geometry.
@@ -520,12 +524,12 @@ class RegularTrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
         k1, k2 = self.kmid_matrices
 
         ## Compute the non-Gaussian covariance for each combination of multipoles
-        self.set_ell_cov(0, 0, self.calculator.get_cov_T0(0, 0, k1, k2))
-        self.set_ell_cov(2, 2, self.calculator.get_cov_T0(2, 2, k1, k2))
-        self.set_ell_cov(4, 4, self.calculator.get_cov_T0(4, 4, k1, k2))
-        self.set_ell_cov(0, 2, self.calculator.get_cov_T0(0, 2, k1, k2))
-        self.set_ell_cov(0, 4, self.calculator.get_cov_T0(0, 4, k1, k2))
-        self.set_ell_cov(2, 4, self.calculator.get_cov_T0(2, 4, k1, k2))
+        self.set_ell_cov(0, 0, self.pk_renorm**2 * self.calculator.get_cov_T0(0, 0, k1, k2))
+        self.set_ell_cov(2, 2, self.pk_renorm**2 * self.calculator.get_cov_T0(2, 2, k1, k2))
+        self.set_ell_cov(4, 4, self.pk_renorm**2 * self.calculator.get_cov_T0(4, 4, k1, k2))
+        self.set_ell_cov(0, 2, self.pk_renorm**2 * self.calculator.get_cov_T0(0, 2, k1, k2))
+        self.set_ell_cov(0, 4, self.pk_renorm**2 * self.calculator.get_cov_T0(0, 4, k1, k2))
+        self.set_ell_cov(2, 4, self.pk_renorm**2 * self.calculator.get_cov_T0(2, 4, k1, k2))
 
         return self
 
@@ -717,7 +721,7 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
         # final shape is (l1, l2, k1, k2)
         covBC = 1/4. * np.einsum('lik,ij,mjq->lmkq', response_function, sigma22x22, response_function)
 
-        self.covBC = covBC
+        self.covBC = self.pk_renorm**2 * covBC
 
         # Kaiser approximation used for large-scale modes in redshift space
         # shape is (ell, k)
@@ -737,9 +741,9 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
         covLA -= np.einsum('lk,q,mq->lmkq', P_kaiser, Plin, LA_term)
         covLA -= np.einsum('lk,q,mq->mlqk', P_kaiser, Plin, LA_term) # symmetric of the above
 
-        self.covLA = covLA
+        self.covLA = self.pk_renorm**2 * covLA
 
-        cov = covBC + covLA
+        cov = self.covBC + self.covLA
 
         for l1, l2 in itt.combinations_with_replacement(self.ells, r=2):
             self.set_ell_cov(l1, l2, cov[l1//2, l2//2])

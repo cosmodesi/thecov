@@ -867,9 +867,9 @@ class PowerSpectrumMultipolesCovariance(MultipoleFourierCovariance):
         float
             Shotnoise value.'''
         
-        if isinstance(geometry, geometry.SurveyGeometry):
+        if isinstance(self.geometry, geometry.SurveyGeometry):
             return self.pk_renorm * (1 + self.alpha) * self.geometry.I('12')/self.geometry.I('22')
-        else:
+        elif isinstance(self.geometry, geometry.BoxGeometry):
             return self.pk_renorm * self.geometry.shotnoise
 
     def set_shotnoise(self, shotnoise):

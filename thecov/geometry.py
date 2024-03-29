@@ -329,7 +329,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self.alpha = alpha
         self.kmodes_sampled = kmodes_sampled
 
-        self._shotnoise = None
+        # self._shotnoise = None
         self.nthreads = nthreads
         if self.nthreads is None:
             self.nthreads = int(os.environ.get('OMP_NUM_THREADS', os.cpu_count()))
@@ -337,10 +337,6 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self.logger.debug(f'{self.nthreads} threads available.')
 
         self.tqdm = tqdm
-
-        self._W = {}
-        self._I = {}
-        self._window_power = None
 
         from mockfactory import Catalog
         from pypower import CatalogMesh
@@ -403,6 +399,15 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     @property
     def kfun(self):
         return 2 * np.pi / self.boxsize
+    
+    @property
+    def alpha(self):
+        return self._alpha
+
+    @alpha.setter
+    def alpha(self, alpha):
+        self._alpha = alpha
+        self.clean()
 
     def W_cat(self, W):
         '''Adds a column to the random catalog with the window function Wij.
@@ -832,8 +837,6 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             self.WinKernel[i, ..., 3] *= ell_factor(2,0)
             self.WinKernel[i, ..., 4] *= ell_factor(4,0)
             self.WinKernel[i, ..., 5] *= ell_factor(4,2)
-
-            self.WinKernel[i, ...] /= self.I('22')**2
             
             if self._resume_file is not None and (time.time() - last_save) > 600:
                 self.save(self._resume_file)
@@ -843,6 +846,14 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         if self._resume_file is not None:
             self.save(self._resume_file)
+
+    def clean(self):
+        '''Clean window kernels and power spectra.'''
+        self.WinKernel = None
+        self.WinKernel_error = None
+        self._window_power = None
+        self._W = {}
+        self.I.cache_clear()
 
     @staticmethod
     def _compute_window_kernel_row(bin_kmodes):
@@ -1200,20 +1211,12 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         return geometry
     
     @property
-    def shotnoise(self):
-        if self._shotnoise is None:
-            return (1 + self.alpha)*self.I('12')/self.I('22')
-        return self._shotnoise
-
-    @shotnoise.setter
-    def shotnoise(self, shotnoise):
-        self._shotnoise = shotnoise
+    def fkp_shotnoise(self):
+        return (1 + self.alpha)*self.I('12')/self.I('22')
 
     @property
-    def nbar(self):
-        return 1 / self.shotnoise
+    def shotnoise(self):
+        self.logger.warning('Using FKP shotnoise.')
+        return self.fkp_shotnoise
 
-    @nbar.setter
-    def nbar(self, nbar):
-        self.shotnoise = 1 / nbar
 
