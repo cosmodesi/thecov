@@ -60,7 +60,7 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         else:
             self._pk[ell] = pk
 
-    def get_pk(self, ell, force_return=False, remove_shotnoise=True):
+    def get_pk(self, ell, force_return=False, remove_shotnoise=True, renorm=True):
         '''Get the input power spectrum to be used for the covariance calculation.
 
         Parameters
@@ -74,13 +74,15 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         remove_shotnoise : bool, optional
             Whether to remove the shotnoise from the power spectrum monopole.
         '''
+        
+        pk_renorm = self.pk_renorm if renorm else 1.0
 
         if ell in self._pk.keys():
             pk = self._pk[ell]
             if (not remove_shotnoise) and ell == 0:
                 self.logger.info(f'Adding shotnoise = {self.shotnoise} to ell = 0.')
-                return pk + self.shotnoise
-            return pk
+                return pk / pk_renorm + self.shotnoise
+            return pk / pk_renorm
         elif type(force_return) != bool:
             return force_return*np.ones(self.kbins)
         elif force_return:
