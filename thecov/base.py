@@ -888,7 +888,7 @@ class PowerSpectrumMultipolesCovariance(MultipoleFourierCovariance):
         '''
 
         self.logger.info(f'Estimated shotnoise was {self.shotnoise}')
-        self.logger.info(f'With new normalization, shotnoise is {shotnoise}.')
+        self.logger.info(f'Forcing it to be {shotnoise}.')
 
         self.pk_renorm *= shotnoise / self.shotnoise
         self.logger.info(f'Setting pk_renorm to {self.pk_renorm} based on given shotnoise value.')

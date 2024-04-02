@@ -312,6 +312,8 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         if di != 1:
             self.logger.info(f'Rebinning power spectrum by a factor of {di}. From dk = {dk_file} to dk = {self.dk}.')
 
+        self.logger.info(f'Grouping {di} bins.')
+
         if remove_shotnoise is None:
             if self.geometry is None:
                 remove_shotnoise = True
@@ -337,7 +339,9 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         self.set_galaxy_pk_multipole(P4, 4)
 
         self.alpha = pypower.attrs['sum_data_weights1']/pypower.attrs['sum_randoms_weights1']
+        self.logger.info(f'alpha = sum_data_weights/sum_randoms_weights estimated from pypower is {self.alpha:.2f}')
         self.pk_renorm = self.geometry.I('22') / pypower.wnorm * naverage
+        self.logger.info(f'Renormalizing by a factor of {self.pk_renorm:.2f} to match pypower power spectrum normalization.')
 
 class RegularTrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
     '''Regular trispectrum covariance matrix of power spectrum multipoles in a given geometry.
