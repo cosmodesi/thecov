@@ -233,28 +233,6 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         delta_k = jk - ik + self.geometry.delta_k_max
         
         return WinKernel[ik, delta_k, 14]
-    
-    def rescale_shotnoise(self, ref_cov, set=True, preproc=None):
-        original_alpha = self.geometry.alpha
-        set_alpha = self.alpha
-
-        original_shotnoise = (1 + original_alpha) * self.pk_renorm * self.geometry.I('12')/self.geometry.I('22')
-        set_shotnoise =      (1 +      set_alpha) * self.pk_renorm * self.geometry.I('12')/self.geometry.I('22')
-
-        from scipy.optimize import root_scalar
-        result = root_scalar(self._get_shotnoise_rescaling_func(ref_cov, preproc=preproc), x0=0, x1=set_alpha)
-
-        new_alpha = result.root
-        new_shotnoise = (1 + new_alpha) * self.pk_renorm * self.geometry.I('12')/self.geometry.I('22')
-
-        self.logger.info(f'alpha rescaling: {original_alpha} -> {set_alpha} -> {new_alpha}')
-        self.logger.info(f'shotnoise rescaling: {original_shotnoise} -> {set_shotnoise} -> {new_shotnoise}')
-        self.logger.info(f'ratio: {new_shotnoise/set_shotnoise}')
-
-        if set:
-            self.alpha = new_alpha
-
-        return new_alpha, new_shotnoise
 
     def _get_volume_rescaling_func(self, reference, preproc=None):
         if preproc is None:
