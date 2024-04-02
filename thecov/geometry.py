@@ -916,6 +916,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             k2zh /= k2r
             # k2 hat arrays built
 
+            # Expressions below come straight from CovaPT (arXiv:1910.02914)
+
             # Now calculating window multipole kernels by taking dot products of cartesian FFTs with k1-hat, k2-hat arrays
             # W corresponds to W22(k) and Wc corresponds to conjugate of W22(k)
             # L(i) refers to multipoles

@@ -642,6 +642,8 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
                          self.params['g2']
         
         dlnpk = self._dlnPk
+
+        # Expressions from CovaPT (arXiv:1910.02914)
         
         if ell_kernel == 0:
             Z12 = lambda mu: (7*b1**2*be*(70 + 42*be + (-35*(-3 + dlnpk) + 3*be*(28 + 13*be - 14*dlnpk - 5*be*dlnpk))*mu**2) + 
