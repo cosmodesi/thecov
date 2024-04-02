@@ -710,7 +710,7 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierCovariance):
         return ell1, ell2
 
     def savecsv(self, filename, ells_both_ways=False, fmt=['%.d', '%.d', '%.4f', '%.4f', '%.8e']):
-        k1, k2 = self.kmid_matrices
+        k1, k2 = self.kmid_ell_matrices
         ell1, ell2 = self.ell_matrices
 
         cov = self.cov
