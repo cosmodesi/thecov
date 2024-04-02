@@ -41,10 +41,10 @@ randoms['POSITION'] = mockfactory.utils.sky_to_cartesian(
 # Create geometry object to be used in covariance calculation
 geometry = thecov.geometry.SurveyGeometry(
                             randoms,
-                            kmax_mask=0.02, # Nyquist wavelength of window FFTs
-                            boxpad=1.2, # box size / inferred size from catalog
+                            kmax_window=0.02, # Nyquist wavelength of window FFTs
+                            boxpad=2., # multiplies the box size inferred from catalog
                             alpha=0.1, # N_galaxies / N_randoms
-                            kmodes_sampled=10000, # max N samples used in integ
+                            kmodes_sampled=5000, # max N samples used in integ
                            )
 
 kmin, kmax, dk = 0.0, 0.5, 0.005
@@ -80,7 +80,7 @@ t0.compute_covariance()
 # Creating a new geometry object with finer grid for SSC calcs.
 # Larger boxpad yields smaller k-fundamental.
 geometry_ssc = thecov.geometry.SurveyGeometry(randoms,
-                                              kmax_mask=0.1,
+                                              kmax_window=0.1,
                                               boxpad=2.0,
                                               alpha=0.1)
 ssc = thecov.covariance.SuperSampleCovariance(geometry_ssc)
