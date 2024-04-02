@@ -320,7 +320,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     .. [1] https://arxiv.org/abs/1910.02914
     '''
 
-    def __init__(self, randoms, nmesh=None, cellsize=None, boxsize=None, boxpad=1.2, kmax_mask=0.02, kmodes_sampled=10000, alpha=1.0, nthreads=None, resume_file=None, tqdm=shell_tqdm, **kwargs):
+    def __init__(self, randoms, nmesh=None, cellsize=None, boxsize=None, boxpad=1.2, kmax_window=0.02, kmodes_sampled=10000, alpha=1.0, nthreads=None, resume_file=None, tqdm=shell_tqdm, **kwargs):
 
         base.FourierBinned.__init__(self)
 
@@ -357,8 +357,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             nbar = RedshiftDensityInterpolator(z=distance, fsky=fsky)
             self._randoms['NZ'] = self.alpha * nbar(distance)
         if nmesh is None and cellsize is None:
-            # Pick value that will give at least k_mask = kmax_mask in the FFTs
-            cellsize = np.pi / kmax_mask / (1. + 1e-9)
+            # Pick value that will give at least k_mask = kmax_window in the FFTs
+            cellsize = np.pi / kmax_window / (1. + 1e-9)
 
         self._mesh = CatalogMesh(data_positions=self._randoms['POSITION'], data_weights=self._randoms['WEIGHT'],
                                  position_type='pos', nmesh=nmesh, cellsize=cellsize, boxsize=boxsize, boxpad=boxpad, dtype='c16',
@@ -371,8 +371,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self.logger.info(f'Fundamental wavenumber of window FFTs = {self.kfun}.')
         self.logger.info(f'Nyquist wavenumber of window FFTs = {self.knyquist}.')
 
-        if self.knyquist < kmax_mask:
-            self.logger.warning(f'Nyquist wavelength {self.knyquist} smaller than required kmax_mask = {kmax_mask}.')
+        if self.knyquist < kmax_window:
+            self.logger.warning(f'Nyquist wavelength {self.knyquist} smaller than required kmax_window = {kmax_window}.')
 
         self.logger.info(f'Average of {self._mesh.data_size / self.nmesh**3} objects per voxel.')
 
