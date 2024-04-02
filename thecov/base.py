@@ -95,9 +95,14 @@ class Covariance:
         new_cov.symmetrize()
         return new_cov
     
-    def regularize(self):
+    def regularize(self, mode='zero'):
         eigvals, eigvecs = self.eig
-        eigvals[eigvals < 0] = 0
+        if mode == 'zero':
+            eigvals[eigvals < 0] = 0
+        elif mode == 'flip':
+            eigvals = np.abs(eigvals)
+        elif mode == 'minpos':
+            eigvals[eigvals < 0] = min(eigvals[eigvals > 0])
         self.cov = np.einsum('ij,jk,kl->il', eigvecs, np.diag(eigvals), eigvecs.T)
     
     def regularized(self):
