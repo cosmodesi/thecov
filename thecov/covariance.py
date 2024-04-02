@@ -132,9 +132,9 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         '''
 
         # terms without the power spectrum have to be multiplied by its relative normalization pk_renorm
-        func = lambda ik,jk:               self._get_pk_pk_term(ik, jk) + \
-                    (1 + self.alpha)     * self._get_pk_shotnoise_term(ik, jk) + \
-                    (1 + self.alpha)**2  * self._get_shotnoise_shotnoise_term(ik, jk)
+        func = lambda ik,jk:               self._get_cosmic_variance_term(ik, jk) + \
+                    (1 + self.alpha)     * self._get_mixed_term(ik, jk) + \
+                    (1 + self.alpha)**2  * self._get_shotnoise_term(ik, jk)
 
         self._set_survey_covariance(self._build_covariance_survey(func), self)
         eigvals = self.eigvals
@@ -184,7 +184,7 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
 
         return covariance
 
-    def _get_pk_pk_term(self, ik, jk):
+    def _get_cosmic_variance_term(self, ik, jk):
         
         WinKernel = self.geometry.get_window_kernels()
 
@@ -207,7 +207,7 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
             WinKernel[ik, delta_k, 7]*P4[ik]*P2[jk] + \
             WinKernel[ik, delta_k, 8]*P4[ik]*P4[jk]
 
-    def _get_pk_shotnoise_term(self, ik, jk):
+    def _get_mixed_term(self, ik, jk):
         
         WinKernel = self.geometry.get_window_kernels()
 
@@ -224,7 +224,7 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
                 WinKernel[ik, delta_k, 12]*P2[jk] + \
                 WinKernel[ik, delta_k, 13]*P4[jk]
     
-    def _get_shotnoise_shotnoise_term(self, ik, jk):
+    def _get_shotnoise_term(self, ik, jk):
         
         WinKernel = self.geometry.get_window_kernels()
 
@@ -277,12 +277,12 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         @np.vectorize
         def dlikelihood(alpha):
 
-            cov_func = lambda ik,jk:                         self._get_pk_pk_term(ik, jk) + \
-                        (1 + alpha)    * self.pk_renorm    * self._get_pk_shotnoise_term(ik, jk) + \
-                        (1 + alpha)**2 * self.pk_renorm**2 * self._get_shotnoise_shotnoise_term(ik, jk)
+            cov_func = lambda ik,jk:                         self._get_cosmic_variance_term(ik, jk) + \
+                        (1 + alpha)    * self.pk_renorm    * self._get_mixed_term(ik, jk) + \
+                        (1 + alpha)**2 * self.pk_renorm**2 * self._get_shotnoise_term(ik, jk)
             
-            get_dcov_dalpha = self._build_covariance_survey(self._get_pk_shotnoise_term) + \
-              2*(1 + alpha) * self._build_covariance_survey(self._get_shotnoise_shotnoise_term)
+            get_dcov_dalpha = self._build_covariance_survey(self._get_mixed_term) + \
+              2*(1 + alpha) * self._build_covariance_survey(self._get_shotnoise_term)
             
             covariance = preproc(self._set_survey_covariance(self._build_covariance_survey(cov_func))).cov
             precision_matrix = np.linalg.inv(covariance)
