@@ -51,8 +51,6 @@ kmin, kmax, dk = 0.0, 0.5, 0.005
 
 gaussian = thecov.covariance.GaussianCovariance(geometry)
 gaussian.set_kbins(kmin, kmax, dk)
-gaussian.set_shotnoise(shotnoise) # optional but recommended, fixes the P(k)
-                                  # estimator normalization
 
 # Load input power spectra (P0, P2, P4) for the Gaussian covariance
 
