@@ -829,7 +829,7 @@ class PowerSpectrumMultipolesCovariance(MultipoleFourierCovariance):
     
     @alpha.setter
     def alpha(self, alpha):
-        '''Sets the value of alpha. This is the alpha used in the Pk measurements.
+        '''Sets the value of alpha. This is the alpha used in the P(k) measurements.
            It can be different from the alpha used in the geometry object.
 
         Parameters
