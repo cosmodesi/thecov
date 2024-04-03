@@ -85,7 +85,7 @@ def test_multipole_covariance_addition():
     assert (addition.get_ell_cov(0,4).cov == cov1_04 + cov2_04).all()
     assert (addition.get_ell_cov(2,4).cov == cov1_24 + cov2_24).all()
 
-def test_multipole_fourier_covariance_save_load_table():
+def test_multipole_fourier_covariance_save_load_csv():
     cov = thecov.base.MultipoleFourierCovariance()
     cov.set_kbins(0., 0.4, 0.005)
 
@@ -99,11 +99,11 @@ def test_multipole_fourier_covariance_save_load_table():
     cov.set_ell_cov(0, 4, cov04)
     cov.set_ell_cov(4, 2, cov24.T)
 
-    cov.save_table('test1.txt')
-    cov.save_table('test2.txt', ells_both_ways=True)
+    cov.savecsv('test1.txt')
+    cov.savecsv('test2.txt', ells_both_ways=True)
 
-    cov1 = thecov.base.MultipoleFourierCovariance.from_table('test1.txt')
-    cov2 = thecov.base.MultipoleFourierCovariance.from_table('test2.txt')
+    cov1 = thecov.base.MultipoleFourierCovariance.fromcsv('test1.txt')
+    cov2 = thecov.base.MultipoleFourierCovariance.fromcsv('test2.txt')
 
     assert np.allclose(cov1.cov, cov.cov)
     assert np.allclose(cov2.cov, cov.cov)

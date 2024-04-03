@@ -7,7 +7,7 @@ import matplotlib.pyplot as plot
 
 import collections.abc
 
-__all__ = ['triangle_cov', 'cov2cor', 'plot_cov_array', 'plot_cov', 'plot_cov_diag', 'ridgeplot_cov']
+# __all__ = ['triangle_cov', 'cov2cor', 'plot_cov_array', 'plot_cov', 'plot_cov_diag', 'ridgeplot_cov']
 
 
 def mkdir(dirname):
@@ -239,8 +239,8 @@ def plot_cov(cov, label=None, kmax=None, num_ticks=5, plot_sizes={}, **kwargs):
     import itertools as itt
     from . import base
 
-    matplotlib.rc('font', family='STIXGeneral')
-    matplotlib.rc('text', usetex=True)
+    # matplotlib.rc('font', family='STIXGeneral')
+    # matplotlib.rc('text', usetex=True)
     matplotlib.rcParams['figure.dpi']= 150
     matplotlib.rcParams['figure.facecolor']= 'white'
 
@@ -498,3 +498,51 @@ def ridgeplot_cov(cov, k=None, step=1, nrange=5, figsize=(5,25), logplot=False, 
     plot.subplots_adjust(hspace=hspace)
 
     return fig, axes
+
+def fgrowth(Omega_m, z):
+    '''Estimates the growth rate at redshift z.
+
+    Parameters
+    ----------
+    Omega_m : float
+        Matter density parameter.
+    z : float
+        Redshift.
+
+    Returns
+    -------
+    float
+        Growth rate.
+    '''
+    from scipy.special import hyp2f1
+
+    return (1. + 6*(Omega_m-1)*hyp2f1(4/3., 2, 17/6., (1-1/Omega_m)/(1+z)**3) / \
+          (11*Omega_m*(1+z)**3*hyp2f1(1/3., 1, 11/6., (1-1/Omega_m)/(1+z)**3) ))
+
+def wedges_to_multipoles(corr, muedges, ells=(0,2,4)):
+    from scipy import special
+    corr_ell = []
+    for ell in ells:
+        poly = special.legendre(ell).integ()(muedges)
+        legendre = (2 * ell + 1) * (poly[1:] - poly[:-1])
+        corr_ell.append(np.sum(corr * legendre, axis=-1) / (muedges[-1] - muedges[0]))
+    return np.array(corr_ell)
+
+def legendre(ell):
+    if ell == 0:
+        legendre = lambda mu: 1
+    elif ell == 2:
+        legendre = lambda mu: (3*mu**2 - 1)/2
+    elif ell == 4:
+        legendre = lambda mu: (35*mu**4 - 30*mu**2 + 3)/8
+        
+    return np.vectorize(legendre)
+
+def limit(iterable, count):
+    """
+    Limit number of iterated elements from an iterable.
+    count -- is the maximum number of elements to iterate through
+    """
+    while count > 0:
+        yield next(iterable)
+        count -= 1
