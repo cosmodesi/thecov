@@ -486,9 +486,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     def get_mesh(self,label):
         weights = self.W_cat(label) if 'w' in label.lower() else self.randoms[label]
         return self._mesh.clone(data_positions=self.randoms['POSITION'],
-                                 data_weights=weights,
-                                 position_type='pos',
-                                 ).to_mesh(compensate=True)
+                                data_weights=weights,
+                                position_type='pos',
+                                ).to_mesh(compensate=True)
 
     def get_fft(self, label):
         toret = self.get_mesh(label).r2c()
@@ -534,7 +534,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         return kedges, pk
     
     def compute_Qmus(self, W1, W2=None, sedges=None, *args, **kwargs):
-        if W2 == None:
+        if W2 is None:
             W2 = W1
         from pycorr import TwoPointCounter
 
@@ -545,12 +545,12 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         pos = self.randoms['POSITION'].T
 
         counts = TwoPointCounter(mode='smu',
-                                edges=edges,
-                                positions1=pos,
-                                positions2=None if W1 == W2 else pos,
-                                weights1=self.W_cat(W1),
-                                weights2=None if W1 == W2 else self.W_cat(W2),
-                                *args, **kwargs)
+                                 edges=edges,
+                                 positions1=pos,
+                                 positions2=None if W1 == W2 else pos,
+                                 weights1=self.W_cat(W1),
+                                 weights2=None if W1 == W2 else self.W_cat(W2),
+                                 *args, **kwargs)
 
         v = 2. / 3. * np.pi * edges[0][:, None]**3 * edges[1]
         dv = np.diff(np.diff(v, axis=0), axis=-1)
