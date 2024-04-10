@@ -54,9 +54,9 @@ gaussian.set_kbins(kmin, kmax, dk)
 
 # Load input power spectra (P0, P2, P4) for the Gaussian covariance
 
-gaussian.set_galaxy_pk_multipole(P0, 0, has_shotnoise=False)
-gaussian.set_galaxy_pk_multipole(P2, 2)
-gaussian.set_galaxy_pk_multipole(P4, 4)
+gaussian.set_pk(P0, 0, has_shotnoise=False)
+gaussian.set_pk(P2, 2)
+gaussian.set_pk(P4, 4)
 
 gaussian.compute_covariance()
 
