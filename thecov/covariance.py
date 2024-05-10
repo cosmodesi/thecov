@@ -6,14 +6,14 @@ given geometry.
 
 Example
 -------
->>> from thecov import BoxGeometry, GaussianCovariance
+>>> from thecov import SurveyGeometry, GaussianCovariance
 >>> geometry = SurveyGeometry(random_catalog=randoms, alpha=1. / 10)
 >>> covariance = GaussianCovariance(geometry)
 >>> covariance.set_kbins(kmin=0, kmax=0.25, dk=0.005)
->>> covariance.set_pk(P0, 0, has_shotnoise=False)
->>> covariance.set_pk(P2, 2)
->>> covariance.set_pk(P4, 4)
->>> covariance.compute_covariance()
+>>> covariance.set_galaxy_pk_multipole(P0, 0, has_shotnoise=False)
+>>> covariance.set_galaxy_pk_multipole(P2, 2)
+>>> covariance.set_galaxy_pk_multipole(P4, 4)
+>>> covariance.compute_covariance_box()
 """
 
 import logging
@@ -154,6 +154,8 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
             # self._compute_covariance_survey()
         self.logger.info(
             f'Condition number is {eigvals.max()/eigvals[eigvals > 0].min():.2e}.')
+        self.logger.info(
+            f'Lowest positive eigval is {eigvals[eigvals > 0].min():.2e}.')
 
         if not np.allclose(self.cov, self.cov.T):
             self.logger.warning('Covariance matrix is not symmetric.')
@@ -283,18 +285,30 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         return dlikelihood
 
     def load_pypower_file(self, filename, remove_shotnoise=None, set_shotnoise=False):
-        from pypower import PowerSpectrumMultipoles
-        self.logger.info(f'Loading power spectrum from {filename}.')
-        pypower = PowerSpectrumMultipoles.load(filename)
-        return self.load_pypower(pypower, remove_shotnoise=remove_shotnoise, set_shotnoise=set_shotnoise)
-
-    def load_pypower(self, pypower, remove_shotnoise=None, set_shotnoise=False, naverage=1):
         '''Load power spectrum from pypower file and set it to be used for the covariance calculation.
 
         Parameters
         ----------
         filename : str
             Name of the pypower file containing the power spectrum.
+        remove_shotnoise : bool, optional
+            Whether pypower should be used to remove the shotnoise from the power spectrum monopole.
+            If None, will be determined based on the geometry used.
+        set_shotnoise : bool, optional
+            Whether to rescale shotnoise matching the value in the power spectrum file.
+        '''
+        from pypower import PowerSpectrumMultipoles
+        self.logger.info(f'Loading power spectrum from {filename}.')
+        pypower = PowerSpectrumMultipoles.load(filename)
+        return self.load_pypower(pypower, remove_shotnoise=remove_shotnoise, set_shotnoise=set_shotnoise)
+
+    def load_pypower(self, pypower, remove_shotnoise=None, set_shotnoise=False, naverage=1):
+        '''Load power spectrum from pypower object and set it to be used for the covariance calculation.
+
+        Parameters
+        ----------
+        pypower : PowerSpectrumMultipoles
+            pypower object containing the power spectrum.
         remove_shotnoise : bool, optional
             Whether pypower should be used to remove the shotnoise from the power spectrum monopole.
             If None, will be determined based on the geometry used.

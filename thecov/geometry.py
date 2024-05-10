@@ -80,7 +80,7 @@ class BoxGeometry(Geometry):
     nmesh : int
         Number of mesh points in each dimension.
     alpha : float
-        Factor to multiply the number of galaxies in the box.
+        <number of galaxies>/<number of randoms> in the box.
 
     Methods
     -------
@@ -89,7 +89,7 @@ class BoxGeometry(Geometry):
     set_nmesh
         Set the number of mesh points in each dimension.
     set_alpha
-        Set the factor to multiply the number of galaxies in the box.
+        Set the alpha parameter.
     '''
     logger = logging.getLogger('BoxGeometry')
 
@@ -158,7 +158,7 @@ class BoxGeometry(Geometry):
         return np.average(self.zmid, weights=self.nz * bin_volume)
 
     def set_effective_volume(self, zmin, zmax, fsky=None):
-        '''Set the effective volume of the box.
+        '''Set the effective volume of the box based on the redshift limits of the sample and the fraction of the sky covered.
 
         Parameters
         ----------
@@ -409,12 +409,13 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self.clean()
 
     def W_cat(self, W):
-        '''Adds a column to the random catalog with the window function Wij.
+        '''Returns the window function Wij for the objects in the catalog.
+           If it has not been computed yet, it is computed.
 
         Parameters
         ----------
         W : str
-            Window function label.
+            Window function label (e.g. '12', '22', '12xx', '22xy', etc.)
 
         Returns
         -------
@@ -448,7 +449,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         return self._randoms[f'W{w}'].sum().tolist()
 
     def W(self, W):
-        '''Returns FFT of the window function Wij. If it has not been computed yet, it is computed.
+        '''Returns an FFT of the window function Wij. If it has not been computed yet, it is computed.
 
         Parameters
         ----------
@@ -473,10 +474,12 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
     @property
     def kfun(self):
+        """Fundamental wavenumber of the box."""
         return 2 * np.pi / self.boxsize
 
     @property
     def ikgrid(self):
+        """Grid of wavenumber indices."""
         ikgrid = []
         for _ in range(3):
             iik = np.arange(self.nmesh)
@@ -485,6 +488,17 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         return ikgrid
 
     def get_mesh(self,label):
+        """Returns a mesh object for the window function Wij.
+        
+        Parameters
+        ----------
+        label : str
+            Window function label.
+            
+        Returns
+        -------
+            Mesh
+                Mesh object for the window function Wij."""
         weights = self.W_cat(label) if 'w' in label.lower() else self.randoms[label]
         return self._mesh.clone(data_positions=self.randoms['POSITION'],
                                 data_weights=weights,
@@ -492,6 +506,17 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                                 ).to_mesh(compensate=True)
 
     def get_fft(self, label):
+        """Returns the FFT of the window function Wij.
+        
+        Parameters
+        ----------
+        label : str
+            Window function label.
+            
+        Returns
+        -------
+            array_like
+                FFT of the window function Wij."""
         toret = self.get_mesh(label).r2c()
         toret *= self.nmesh**3
         return toret.value
