@@ -6,9 +6,15 @@ import copy
 
 import numpy as np
 
-from . import utils
+from . import utils, math, geometry
+import logging
 
-__all__ = ['Covariance', 'MultipoleCovariance']
+__all__ = ['Covariance',
+           'MultipoleCovariance',
+           'FourierBinned',
+           'FourierCovariance',
+           'MultipoleFourierCovariance',
+           'PowerSpectrumMultipolesCovariance']
 
 class Covariance:
     '''A class that represents a covariance matrix.
@@ -86,32 +92,33 @@ class Covariance:
         new_cov = copy.deepcopy(self)
         new_cov.symmetrize()
         return new_cov
+    
+    def regularize(self, mode='zero'):
+        eigvals, eigvecs = self.eig
+        if mode == 'zero':
+            eigvals[eigvals < 0] = 0
+        elif mode == 'flip':
+            eigvals = np.abs(eigvals)
+        elif mode == 'minpos':
+            eigvals[eigvals < 0] = min(eigvals[eigvals > 0])
+        self.cov = np.einsum('ij,jk,kl->il', eigvecs, np.diag(eigvals), eigvecs.T)
+    
+    def regularized(self):
+        new_cov = copy.deepcopy(self)
+        new_cov.regularize()
+        return new_cov
 
     def __add__(self, y):
-        obj = copy.deepcopy(self)
-        obj.cov += (y.cov if isinstance(y, Covariance) else y)
-
-        return obj
+        return Covariance(self.cov + (y.cov if isinstance(y, Covariance) else y))
 
     def __sub__(self, y):
-
-        obj = copy.deepcopy(self)
-        obj.cov -= (y.cov if isinstance(y, Covariance) else y)
-
-        return obj
+        return self.__add__(-y)
 
     def __mul__(self, y):
-
-        obj = copy.deepcopy(self)
-        obj.cov *= y
-
-        return obj
+        return Covariance(self.cov * y)
 
     def __truediv__(self, y):
-        obj = copy.deepcopy(self)
-        obj.cov /= y
-
-        return obj
+        return Covariance(self.cov / y)
 
     @property
     def T(self):
@@ -269,38 +276,20 @@ class MultipoleCovariance(Covariance):
         self._mshape = (0, 0)
 
     def __add__(self, y):
-        obj = copy.deepcopy(self)
-
         if isinstance(y, MultipoleCovariance):
             assert self.ells == y.ells, "ells are not the same"
 
-        obj.set_full_cov(self.cov + (y.cov if isinstance(y, Covariance) else y), self.ells)
-
-        return obj
+        return MultipoleCovariance.from_array(self.cov + (y.cov if isinstance(y, Covariance) else y), self.ells)
 
     def __sub__(self, y):
-        obj = copy.deepcopy(self)
-
-        if isinstance(y, MultipoleCovariance):
-            assert self.ells == y.ells, "ells are not the same"
-
-        obj.set_full_cov(self.cov - (y.cov if isinstance(y, Covariance) else y), self.ells)
-
-        return obj
+        return self.__add__(-y)
 
     def __mul__(self, y):
-        obj = copy.deepcopy(self)
-
-        obj.set_full_cov(self.cov * y, self.ells)
-
-        return obj
+        return MultipoleCovariance.from_array(self.cov * y, self.ells)
+        
 
     def __truediv__(self, y):
-        obj = copy.deepcopy(self)
-
-        obj.set_full_cov(self.cov / y, self.ells)
-
-        return obj
+        return MultipoleCovariance.from_array(self.cov / y, self.ells)
 
     @property
     def cov(self):
@@ -345,7 +334,7 @@ class MultipoleCovariance(Covariance):
 
         return sorted(self._ells)
 
-    def get_ell_cov(self, l1, l2, force_return=False):
+    def get_ell_cov(self, l1, l2, force_return=False, cls=Covariance):
         '''Returns the covariance matrix for a given pair of multipoles.
 
         Parameters
@@ -354,8 +343,9 @@ class MultipoleCovariance(Covariance):
             the first multipole.
         l2
             the second multipole.
-        force_return, boolean, optional
-            `force_return` if True, returns a zero matrix if the covariance matrix is not defined.
+        force_return, boolean, float, optional
+            If True, returns a zero matrix if the covariance matrix is not defined.
+            If `force_return` is a float, returns a matrix with the given value.
 
         Returns
         -------
@@ -368,10 +358,12 @@ class MultipoleCovariance(Covariance):
 
         if (l1, l2) in self._multipole_covariance:
             return self._multipole_covariance[l1, l2]
+        elif type(force_return) != bool:
+            return cls(force_return*np.ones(self._mshape))
         elif force_return:
-            return Covariance(np.zeros(self._mshape))
+            return cls(np.zeros(self._mshape))
 
-    def set_ell_cov(self, l1, l2, cov):
+    def set_ell_cov(self, l1, l2, cov, cls=Covariance):
         '''Sets the covariance matrix for a given pair of multipoles.
 
         Parameters
@@ -385,21 +377,23 @@ class MultipoleCovariance(Covariance):
         '''
 
         if l1 > l2:
-            self.set_ell_cov(l2, l1, cov.T)
-            return
+            return self.set_ell_cov(l2, l1, cov.T)
 
         if self._ells == []:
             self._mshape = cov.shape
 
-        assert cov.shape == self._mshape, "ell covariance has shape inconsistent with other ells"
+        # assert cov.shape == self._mshape, "ell covariance has shape inconsistent with other ells"
 
         if l1 not in self.ells:
             self._ells.append(l1)
         if l2 not in self.ells:
             self._ells.append(l2)
 
-        self._multipole_covariance[l1, l2] = cov if isinstance(
-            cov, Covariance) else Covariance(cov)
+        cov = cov if isinstance(cov, cls) else cls(cov)
+
+        self._multipole_covariance[l1, l2] = cov
+        
+        return cov
 
     def set_full_cov(self, cov_array, ells=(0, 2, 4)):
         '''Sets the full covariance matrix from stacked covariances for different multipoles.
@@ -430,6 +424,20 @@ class MultipoleCovariance(Covariance):
             self.set_ell_cov(l1, l2, c[i*c.shape[0]//len(ells):(i+1)*c.shape[0]//len(ells),
                                        j*c.shape[1]//len(ells):(j+1)*c.shape[1]//len(ells)])
         return self
+    
+    def foreach(self, func):
+        '''Applies a function to each covariance matrix.
+
+        Parameters
+        ----------
+        func : function
+            The function to be applied to each covariance matrix.
+        '''
+
+        for (l1, l2), cov in self._multipole_covariance.items():
+            self.set_ell_cov(l1, l2, func(cov))
+        
+        return self
 
 
     @classmethod
@@ -454,8 +462,7 @@ class MultipoleCovariance(Covariance):
 
         return cov
 
-    @classmethod
-    def loadtxt(cls, *args, **kwargs):
+    def loadtxt(self, *args, **kwargs):
         '''Loads the covariance from a text file with a specified filename.
 
         Parameters
@@ -469,7 +476,8 @@ class MultipoleCovariance(Covariance):
             A MultipoleCovariance object.
         '''
 
-        return cls.from_array(np.loadtxt(*args, **kwargs))
+        self.set_full_cov(np.loadtxt(*args, **kwargs))
+        return self
 
 
 class FourierBinned:
@@ -493,6 +501,9 @@ class FourierBinned:
         This function defines the k-bins. Only linear binning is supported.
     '''
 
+    def __init__(self) -> None:
+        self.kmin, self.kmax, self.dk, self._nmodes = None, None, None, None
+
     def set_kbins(self, kmin, kmax, dk, nmodes=None):
         '''This function defines the k-bins. Only linear binning is supported.
 
@@ -513,8 +524,7 @@ class FourierBinned:
         self.kmax = kmax
         self.kmin = kmin
 
-        if (nmodes is not None):
-            self._nmodes = nmodes
+        self._nmodes = nmodes
 
     @property
     def is_kbins_set(self):
@@ -620,10 +630,10 @@ class FourierBinned:
             The number of modes per k-bin shell.
         '''
 
-        if hasattr(self, '_nmodes'):
+        if self._nmodes is not None:
             return self._nmodes
 
-        return utils.nmodes(self.volume, self.kedges[:-1], self.kedges[1:])
+        return math.nmodes(self.volume, self.kedges[:-1], self.kedges[1:])
 
     @nmodes.setter
     def nmodes(self, nmodes):
@@ -638,14 +648,50 @@ class FourierBinned:
         self._nmodes = nmodes
         return nmodes
 
-class MultipoleFourierCovariance(MultipoleCovariance, FourierBinned):
+class FourierCovariance(Covariance, FourierBinned):
+
+    def __init__(self, cov):
+        Covariance.__init__(self, cov)
+        FourierBinned.__init__(self)
+    
+    @property
+    def kmid_matrices(self):
+        k1 = np.einsum('i,j->ij', self.kmid, np.ones_like(self.kmid))
+        k2 = k1.T
+
+        return k1, k2
+
+    @property
+    def kmin_matrices(self):
+        k1 = np.einsum('i,j->ij', self.kedges[:-1], np.ones_like(self.kmid))
+        k2 = k1.T
+
+        return k1, k2
+
+    def kcut(self, kmin=None, kmax=None):
+        if kmin is None:
+            kmin = self.kmin
+
+        if kmax is None:
+            kmax = self.kmax
+
+        imin = (self.kmid >= kmin).argmax()
+        imax = len(self.kmid) if (self.kmid <= kmax).all() else (self.kmid <= kmax).argmin()
+
+        self._covariance = self._covariance[imin:imax, imin:imax]
+        self.kmin, self.kmax = kmin, kmax
+
+        return self
+
+class MultipoleFourierCovariance(MultipoleCovariance, FourierCovariance):
 
     def __init__(self):
         MultipoleCovariance.__init__(self)
         FourierBinned.__init__(self)
+        self.logger = logging.getLogger('MultipoleFourierCovariance')
 
     @property
-    def kmid_matrices(self):
+    def kmid_ell_matrices(self):
         kfull = np.concatenate([self.kmid for _ in self.ells])
         k1 = np.einsum('i,j->ij', kfull, np.ones_like(kfull))
         k2 = k1.T
@@ -661,9 +707,8 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierBinned):
 
         return ell1, ell2
 
-
-    def save_table(self, filename, ells_both_ways=False, fmt=['%.d', '%.d', '%.4f', '%.4f', '%.8e']):
-        k1, k2 = self.kmid_matrices
+    def savecsv(self, filename, ells_both_ways=False, fmt=['%.d', '%.d', '%.4f', '%.4f', '%.8e']):
+        k1, k2 = self.kmid_ell_matrices
         ell1, ell2 = self.ell_matrices
 
         cov = self.cov
@@ -675,7 +720,7 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierBinned):
                                                k1[mask].reshape(-1, 1),
                                                k2[mask].reshape(-1, 1),
                                               cov[mask].reshape(-1, 1)], axis=1), fmt=fmt, header='ell1 ell2 kmid1 kmid2 cov')
-    def load_table(self, filename):
+    def loadcsv(self, filename):
         ell1, ell2, k1, k2, value = np.loadtxt(filename).T
 
         k = np.unique(k1)
@@ -711,7 +756,137 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierBinned):
         return self
 
     @classmethod
-    def from_table(cls, filename):
+    def fromcsv(cls, filename):
         cov = cls()
-        cov.load_table(filename)
+        cov.loadcsv(filename)
         return cov
+    
+    def set_ell_cov(self, l1, l2, cov, cls=FourierCovariance):
+        cov = super().set_ell_cov(l1, l2, cov, cls=cls)
+        if not cov.is_kbins_set:
+            cov.set_kbins(self.kmin, self.kmax, self.dk, self._nmodes)
+        return cov
+    
+    def get_ell_cov(self, l1, l2, force_return=False, cls=FourierCovariance):
+        return super().get_ell_cov(l1, l2, force_return, cls)
+
+    def kcut(self, kmin=None, kmax=None):
+        if kmin is None:
+            kmin = self.kmin
+
+        if kmax is None:
+            kmax = self.kmax
+
+        self.foreach(lambda cov: cov.kcut(kmin, kmax))
+        self.set_kbins(kmin, kmax, self.dk)
+        
+        self.logger.info(f'kcut to {self.kmin} < k < {self.kmax}')
+
+        return self
+    
+    def set_kbins(self, kmin, kmax, dk, nmodes=None):
+        size = (kmax - kmin)/dk
+        size = (np.round(size) if np.allclose(np.round(size), size) else size).astype(int)
+        self._mshape = (size, size)
+        return super().set_kbins(kmin, kmax, dk, nmodes)
+
+
+class PowerSpectrumMultipolesCovariance(MultipoleFourierCovariance):
+    '''Covariance matrix of power spectrum multipoles in a given geometry.
+
+    Attributes
+    ----------
+    geometry : geometry.Geometry
+        Geometry of the survey. Can be a BoxGeometry or a SurveyGeometry object.
+    '''
+
+    def __init__(self, geometry=None):
+        MultipoleFourierCovariance.__init__(self)
+        self.logger = logging.getLogger('PowerSpectrumCovariance')
+
+        self.geometry = geometry
+
+        self._pk = {}
+        self._alpha = None
+
+        self.pk_renorm = 1
+
+    @property
+    def alpha(self):
+        '''The value of alpha. This is the alpha used in the Pk measurements.
+           It can be different from the alpha used in the geometry object.
+
+        Returns
+        -------
+        float
+            The value of alpha.
+        '''
+        if self._alpha is None:
+            return self.geometry.alpha
+        return self._alpha
+    
+    @alpha.setter
+    def alpha(self, alpha):
+        '''Sets the value of alpha. This is the alpha used in the P(k) measurements.
+           It can be different from the alpha used in the geometry object.
+
+        Parameters
+        ----------
+        alpha : float
+            The value of alpha.
+        '''
+        self._alpha = alpha
+
+    def compute_covariance(self, ells=(0, 2, 4)):
+        '''Compute the covariance matrix for the given geometry and power spectra.
+
+        Parameters
+        ----------
+        ells : tuple, optional
+            Multipoles of the power spectra to have the covariance calculated for.
+        '''
+
+        self._ells = ells
+        self._mshape = (self.kbins, self.kbins)
+
+        if isinstance(self.geometry, geometry.BoxGeometry):
+            return self._compute_covariance_box()
+
+        if isinstance(self.geometry, geometry.SurveyGeometry):
+            return self._compute_covariance_survey()
+
+    def _compute_covariance_box(self):
+        raise NotImplementedError
+
+    def _compute_covariance_survey(self):
+        raise NotImplementedError
+
+    @property
+    def shotnoise(self):
+        '''Shotnoise of the sample in the same normalization as the power spectrum.
+
+        Returns
+        -------
+        float
+            Shotnoise value.'''
+        
+        if isinstance(self.geometry, geometry.SurveyGeometry):
+            return self.pk_renorm * (1 + self.alpha) * self.geometry.I('12')/self.geometry.I('22')
+        elif isinstance(self.geometry, geometry.BoxGeometry):
+            return self.pk_renorm * self.geometry.shotnoise
+
+    def set_shotnoise(self, shotnoise):
+        '''Determines the relative normalization of the power spectrum by comparing
+           the estimated FKP shotnoise with the given shotnoise value.
+
+        Parameters
+        ----------
+        shotnoise : float
+            shotnoise with same normalization as the power spectrum.
+        '''
+
+        self.logger.info(f'Estimated shotnoise was {self.shotnoise}')
+        self.logger.info(f'Forcing it to be {shotnoise}.')
+
+        self.pk_renorm *= shotnoise / self.shotnoise
+        self.logger.info(f'Setting pk_renorm to {self.pk_renorm} based on given shotnoise value.')
