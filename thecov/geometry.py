@@ -15,13 +15,12 @@ from abc import ABC
 import itertools as itt
 import multiprocessing as mp
 import logging
-import functools
 
 import numpy as np
 
 from tqdm import tqdm as shell_tqdm
 
-from . import base, utils
+from . import base, utils, math
 
 __all__ = ['BoxGeometry',
            'SurveyGeometry']
@@ -430,7 +429,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         return self._randoms[f'W{w}']
 
-    @functools.lru_cache(maxsize=100, typed=False)
+    @utils.cache_method
     def I(self, W):
         '''Computes the integral Iij of the window function Wij.
 
@@ -461,6 +460,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         array_like
             FFT of the window function Wij.
         '''
+        if not hasattr(self, '_W'):
+            self._W = {}
         w = W.lower().replace("w", "")
         if w not in self._W:
             self.W_cat(w)
@@ -748,15 +749,15 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         # SAMPLE FROM SHELL
         # kfun = 2 * np.pi / self.boxsize
-        # kmodes = np.array([[utils.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(
+        # kmodes = np.array([[math.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(
         #                    self.kmodes_sampled)] for kmin, kmax in zip(self.kedges[:-1], self.kedges[1:])])
-        # Nmodes = utils.nmodes(self.boxsize**3, self.kedges[:-1], self.kedges[1:])
+        # Nmodes = math.nmodes(self.boxsize**3, self.kedges[:-1], self.kedges[1:])
 
         # SAMPLE FROM CUBE
-        # kmodes, Nmodes = utils.sample_from_cube(self.kmax/kfun, self.dk/kfun, self.kmodes_sampled)
+        # kmodes, Nmodes = math.sample_from_cube(self.kmax/kfun, self.dk/kfun, self.kmodes_sampled)
 
         # HYBRID SAMPLING
-        kmodes, Nmodes = utils.sample_kmodes(kmin=self.kmin,
+        kmodes, Nmodes =  math.sample_kmodes(kmin=self.kmin,
                                              kmax=self.kmax,
                                              dk=self.dk,
                                              boxsize=self.boxsize,
@@ -853,7 +854,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self.WinKernel_error = None
         self._window_power = None
         self._W = {}
-        self.I.cache_clear()
+        self._I = {}
 
     @staticmethod
     def _compute_window_kernel_row(bin_kmodes):

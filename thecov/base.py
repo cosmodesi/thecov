@@ -6,9 +6,7 @@ import copy
 
 import numpy as np
 
-from . import geometry
-
-from . import utils
+from . import utils, math, geometry
 import logging
 
 __all__ = ['Covariance',
@@ -635,7 +633,7 @@ class FourierBinned:
         if self._nmodes is not None:
             return self._nmodes
 
-        return utils.nmodes(self.volume, self.kedges[:-1], self.kedges[1:])
+        return math.nmodes(self.volume, self.kedges[:-1], self.kedges[1:])
 
     @nmodes.setter
     def nmodes(self, nmodes):

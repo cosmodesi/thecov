@@ -21,7 +21,7 @@ import itertools as itt
 
 import numpy as np
 
-from . import base, geometry, utils
+from . import base, geometry, math
 
 __all__ = ['GaussianCovariance',
            'TrispectrumCovariance',
@@ -677,7 +677,7 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
                                         462*g2)*mu**2))/(2695.*b1**2)
 
         Z12 = np.vectorize(Z12)
-        legendre = utils.legendre(ell_legendre)
+        legendre = math.legendre(ell_legendre)
 
         from scipy.integrate import quad
         return np.array([quad(lambda mu: legendre(mu)*Z12(mu)[i], -1, 1)[0] for i in range(len(dlnpk))])
@@ -726,7 +726,7 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
         Plin = self.pk_linear(self.kmid)
 
         # shape here is (ell)
-        Z1 = np.array([quad(lambda mu: utils.legendre(l)(mu) * (1 + be*mu**2), -1, 1)[0]
+        Z1 = np.array([quad(lambda mu: math.legendre(l)(mu) * (1 + be*mu**2), -1, 1)[0]
                        for l in self.ells])
 
         # shape here is (ell_kernel, ell_legendre, k)
