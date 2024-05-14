@@ -15,13 +15,12 @@ from abc import ABC
 import itertools as itt
 import multiprocessing as mp
 import logging
-import functools
 
 import numpy as np
 
 from tqdm import tqdm as shell_tqdm
 
-from . import base, utils
+from . import base, utils, math
 
 __all__ = ['BoxGeometry',
            'SurveyGeometry']
@@ -81,7 +80,7 @@ class BoxGeometry(Geometry):
     nmesh : int
         Number of mesh points in each dimension.
     alpha : float
-        Factor to multiply the number of galaxies in the box.
+        <number of galaxies>/<number of randoms> in the box.
 
     Methods
     -------
@@ -90,7 +89,7 @@ class BoxGeometry(Geometry):
     set_nmesh
         Set the number of mesh points in each dimension.
     set_alpha
-        Set the factor to multiply the number of galaxies in the box.
+        Set the alpha parameter.
     '''
     logger = logging.getLogger('BoxGeometry')
 
@@ -159,7 +158,7 @@ class BoxGeometry(Geometry):
         return np.average(self.zmid, weights=self.nz * bin_volume)
 
     def set_effective_volume(self, zmin, zmax, fsky=None):
-        '''Set the effective volume of the box.
+        '''Set the effective volume of the box based on the redshift limits of the sample and the fraction of the sky covered.
 
         Parameters
         ----------
@@ -410,12 +409,13 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self.clean()
 
     def W_cat(self, W):
-        '''Adds a column to the random catalog with the window function Wij.
+        '''Returns the window function Wij for the objects in the catalog.
+           If it has not been computed yet, it is computed.
 
         Parameters
         ----------
         W : str
-            Window function label.
+            Window function label (e.g. '12', '22', '12xx', '22xy', etc.)
 
         Returns
         -------
@@ -430,7 +430,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         return self._randoms[f'W{w}']
 
-    @functools.lru_cache(maxsize=100, typed=False)
+    @utils.cache_method
     def I(self, W):
         '''Computes the integral Iij of the window function Wij.
 
@@ -449,7 +449,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         return self._randoms[f'W{w}'].sum().tolist()
 
     def W(self, W):
-        '''Returns FFT of the window function Wij. If it has not been computed yet, it is computed.
+        '''Returns an FFT of the window function Wij. If it has not been computed yet, it is computed.
 
         Parameters
         ----------
@@ -461,6 +461,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         array_like
             FFT of the window function Wij.
         '''
+        if not hasattr(self, '_W'):
+            self._W = {}
         w = W.lower().replace("w", "")
         if w not in self._W:
             self.W_cat(w)
@@ -472,10 +474,12 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
     @property
     def kfun(self):
+        """Fundamental wavenumber of the box."""
         return 2 * np.pi / self.boxsize
 
     @property
     def ikgrid(self):
+        """Grid of wavenumber indices."""
         ikgrid = []
         for _ in range(3):
             iik = np.arange(self.nmesh)
@@ -484,13 +488,35 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         return ikgrid
 
     def get_mesh(self,label):
+        """Returns a mesh object for the window function Wij.
+        
+        Parameters
+        ----------
+        label : str
+            Window function label.
+            
+        Returns
+        -------
+            Mesh
+                Mesh object for the window function Wij."""
         weights = self.W_cat(label) if 'w' in label.lower() else self.randoms[label]
         return self._mesh.clone(data_positions=self.randoms['POSITION'],
-                                 data_weights=weights,
-                                 position_type='pos',
-                                 ).to_mesh(compensate=True)
+                                data_weights=weights,
+                                position_type='pos',
+                                ).to_mesh(compensate=True)
 
     def get_fft(self, label):
+        """Returns the FFT of the window function Wij.
+        
+        Parameters
+        ----------
+        label : str
+            Window function label.
+            
+        Returns
+        -------
+            array_like
+                FFT of the window function Wij."""
         toret = self.get_mesh(label).r2c()
         toret *= self.nmesh**3
         return toret.value
@@ -534,7 +560,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         return kedges, pk
     
     def compute_Qmus(self, W1, W2=None, sedges=None, *args, **kwargs):
-        if W2 == None:
+        if W2 is None:
             W2 = W1
         from pycorr import TwoPointCounter
 
@@ -545,12 +571,12 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         pos = self.randoms['POSITION'].T
 
         counts = TwoPointCounter(mode='smu',
-                                edges=edges,
-                                positions1=pos,
-                                positions2=None if W1 == W2 else pos,
-                                weights1=self.W_cat(W1),
-                                weights2=None if W1 == W2 else self.W_cat(W2),
-                                *args, **kwargs)
+                                 edges=edges,
+                                 positions1=pos,
+                                 positions2=None if W1 == W2 else pos,
+                                 weights1=self.W_cat(W1),
+                                 weights2=None if W1 == W2 else self.W_cat(W2),
+                                 *args, **kwargs)
 
         v = 2. / 3. * np.pi * edges[0][:, None]**3 * edges[1]
         dv = np.diff(np.diff(v, axis=0), axis=-1)
@@ -748,15 +774,15 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         # SAMPLE FROM SHELL
         # kfun = 2 * np.pi / self.boxsize
-        # kmodes = np.array([[utils.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(
+        # kmodes = np.array([[math.sample_from_shell(kmin/kfun, kmax/kfun) for _ in range(
         #                    self.kmodes_sampled)] for kmin, kmax in zip(self.kedges[:-1], self.kedges[1:])])
-        # Nmodes = utils.nmodes(self.boxsize**3, self.kedges[:-1], self.kedges[1:])
+        # Nmodes = math.nmodes(self.boxsize**3, self.kedges[:-1], self.kedges[1:])
 
         # SAMPLE FROM CUBE
-        # kmodes, Nmodes = utils.sample_from_cube(self.kmax/kfun, self.dk/kfun, self.kmodes_sampled)
+        # kmodes, Nmodes = math.sample_from_cube(self.kmax/kfun, self.dk/kfun, self.kmodes_sampled)
 
         # HYBRID SAMPLING
-        kmodes, Nmodes = utils.sample_kmodes(kmin=self.kmin,
+        kmodes, Nmodes =  math.sample_kmodes(kmin=self.kmin,
                                              kmax=self.kmax,
                                              dk=self.dk,
                                              boxsize=self.boxsize,
@@ -853,7 +879,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self.WinKernel_error = None
         self._window_power = None
         self._W = {}
-        self.I.cache_clear()
+        self._I = {}
 
     @staticmethod
     def _compute_window_kernel_row(bin_kmodes):
