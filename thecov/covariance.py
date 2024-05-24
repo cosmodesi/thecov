@@ -364,9 +364,6 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         P0, P2, P4 = pypower[imin:imax:di].get_power(
             remove_shotnoise=remove_shotnoise, complex=False)
 
-        if set_shotnoise and self.geometry is not None:
-            self.set_shotnoise(shotnoise=pypower.shotnoise)
-
         self.set_galaxy_pk_multipole(P0, 0, has_shotnoise=not remove_shotnoise)
         self.set_galaxy_pk_multipole(P2, 2)
         self.set_galaxy_pk_multipole(P4, 4)
@@ -375,9 +372,14 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
             pypower.attrs['sum_randoms_weights1']
         self.logger.info(
             f'alpha = sum_data_weights/sum_randoms_weights estimated from pypower is {self.alpha:.2f}')
-        self.pk_renorm = self.geometry.I('22') / pypower.wnorm * naverage
-        self.logger.info(
-            f'Renormalizing by a factor of {self.pk_renorm:.2f} to match pypower power spectrum normalization.')
+
+        if self.geometry is not None:
+            if set_shotnoise:
+                self.set_shotnoise(shotnoise=pypower.shotnoise)
+            else:
+                self.pk_renorm = self.geometry.I('22') / pypower.wnorm * naverage
+                self.logger.info(
+                    f'Renormalizing by a factor of {self.pk_renorm:.2f} to match pypower power spectrum normalization.')
 
 
 class RegularTrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
