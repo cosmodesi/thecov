@@ -478,6 +478,24 @@ class MultipoleCovariance(Covariance):
 
         self.set_full_cov(np.loadtxt(*args, **kwargs))
         return self
+    
+    def ellcut(self, ells):
+        '''Cuts the covariance matrix to include only the given multipoles.
+
+        Parameters
+        ----------
+        ells : tuple
+            The multipoles to be included.
+
+        Returns
+        -------
+        MultipoleCovariance
+            A MultipoleCovariance object.
+        '''
+
+        self._ells = ells
+        self._multipole_covariance = {(l1, l2): self.get_ell_cov(l1, l2) for l1, l2 in itt.combinations_with_replacement(ells, r=2)}
+        return self
 
 
 class FourierBinned:
