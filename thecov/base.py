@@ -525,6 +525,7 @@ class FourierBinned:
         self.kmin = kmin
 
         self._nmodes = nmodes
+        return self
 
     @property
     def is_kbins_set(self):
@@ -788,6 +789,7 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierCovariance):
         size = (kmax - kmin)/dk
         size = (np.round(size) if np.allclose(np.round(size), size) else size).astype(int)
         self._mshape = (size, size)
+        self.foreach(lambda cov: cov.set_kbins(kmin, kmax, dk, nmodes))
         return super().set_kbins(kmin, kmax, dk, nmodes)
 
 
