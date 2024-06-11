@@ -319,7 +319,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     .. [1] https://arxiv.org/abs/1910.02914
     '''
 
-    def __init__(self, randoms, nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmax_window=0.02, kmodes_sampled=5000, alpha=1.0, nthreads=None, resume_file=None, tqdm=shell_tqdm, **kwargs):
+    def __init__(self, randoms, nmesh=None, cellsize=None, boxsize=None, boxpad=2., kmax_window=0.02, kmodes_sampled=5000, alpha=1.0, nthreads=None, tqdm=shell_tqdm, **kwargs):
 
         base.FourierBinned.__init__(self)
 
@@ -377,11 +377,6 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         self.WinKernel = None
         self.WinKernel_error = None
-
-        if resume_file is not None:
-            self.set_resume_file(resume_file)
-        else:
-            self._resume_file = None
 
     def __getstate__(self):
         state = self.__dict__.copy()
@@ -620,7 +615,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
                 pbar.update(1)
 
-        if self._resume_file is not None:
+        if self._resume_file is not None and not self._resume_file_readonly:
             self.save(self._resume_file)
 
     def set_cartesian_fft(self, label, W):
@@ -726,9 +721,6 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         # kavg of first bin
         if np.isnan(self._window_power[-1,0]):
             self._window_power[-1,0] = 0
-
-        if self._resume_file is not None:
-            self.save_resume_file(self._resume_file)
             
         self.logger.info('Window power spectra computed.')
 
@@ -864,13 +856,13 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             self.WinKernel[i, ..., 4] *= ell_factor(4,0)
             self.WinKernel[i, ..., 5] *= ell_factor(4,2)
             
-            if self._resume_file is not None and (time.time() - last_save) > 600:
+            if self._resume_file is not None and not self._resume_file_readonly and (time.time() - last_save) > 600:
                 self.save(self._resume_file)
                 last_save = time.time()
                 
         self.logger.info('Window kernels computed.')
 
-        if self._resume_file is not None:
+        if self._resume_file is not None and not self._resume_file_readonly:
             self.save(self._resume_file)
 
     def clean(self):
@@ -1206,7 +1198,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         for key in self._W:
             self.set_cartesian_fft(key, self._W[key])
 
-    def set_resume_file(self, filename):
+    def set_resume_file(self, filename, readonly=False):
         '''Set the resume file for the window kernels.
 
         Parameters
@@ -1215,6 +1207,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             Name of the file to save the window kernels.
         '''
         self._resume_file = filename
+        self._resume_file_readonly = readonly
 
         if self._resume_file is not None:
             try:
