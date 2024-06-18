@@ -337,6 +337,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         self.tqdm = tqdm
 
+        self._resume_file = None
+
         from mockfactory import Catalog
         from pypower import CatalogMesh
         self._randoms = Catalog(randoms)
