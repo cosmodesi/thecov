@@ -438,17 +438,23 @@ class RegularTrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
 
         if callable(pk_linear):
             self.pk_linear = pk_linear
+            self.calculator.pk_lin_spl = lambda logk: np.log(pk_linear(np.exp(logk)))
+            self.calculator.decomp.compute(self.calculator.get_pk_lin)
         else:
+            if k is None:
+                self.logger.error('k must be set if pk is not callable.')
             if len(k) != len(pk_linear):
                 self.logger.error('k and pk must have the same length.')
-
+            if 0 in k:
+                self.logger.error('k must not contain zero.')
+            
             from scipy.interpolate import InterpolatedUnivariateSpline
-            pk_spline = InterpolatedUnivariateSpline(
-                np.log(k), np.log(pk_linear))
+            self.calculator.pk_lin_spl = InterpolatedUnivariateSpline(
+                np.log(k), np.log(pk_linear), ext='extrapolate')
 
-            self.pk_linear = lambda k: np.exp(pk_spline(np.log(k)))
+            self.calculator.decomp.compute(self.calculator.get_pk_lin)
 
-        self.calculator.set_pk_lin(self.pk_linear)
+            self.pk_linear = self.calculator.get_pk_lin
 
     def set_params(self, fgrowth, b1, b2=None, g2=None, b3=None, g3=None, g2x=None, g21=None):
         '''Set the bias parameters to be used for the covariance calculation. If the optional
