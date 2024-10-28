@@ -66,10 +66,10 @@ def plot_cov(cov, label=None, kmax=None, num_ticks=5, plot_sizes={}, **kwargs):
         k = np.concatenate(num_multipoles*[k])
 
     if covb is not None:
-        cov = math.triangle_cov(cova.cor if isinstance(cova, base.Covariance) else cov2cor(cova),
-                           covb.cor if isinstance(covb, base.Covariance) else cov2cor(covb))
+        cov = math.triangle_cov(cova.cor if isinstance(cova, base.Covariance) else math.cov2cor(cova),
+                           covb.cor if isinstance(covb, base.Covariance) else math.cov2cor(covb))
     else:
-        cov = cova.cor if isinstance(cova, base.Covariance) else cov2cor(cova)
+        cov = cova.cor if isinstance(cova, base.Covariance) else math.cov2cor(cova)
 
     if kmax is not None:
         # cut the covariance to kmax
