@@ -376,10 +376,15 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         if self.geometry is not None:
             if set_shotnoise:
                 self.set_shotnoise(shotnoise=pypower.shotnoise)
+                self.logger.info(
+                    f'Renormalizing the power spectrum by a factor of {self.pk_renorm:.2f} to match pypower shot noise.')
             else:
                 self.pk_renorm = self.geometry.I('22') / pypower.wnorm * naverage
                 self.logger.info(
-                    f'Renormalizing by a factor of {self.pk_renorm:.2f} to match pypower power spectrum normalization.')
+                    f'Renormalizing the power spectrum by a factor of {self.pk_renorm:.2f} to match pypower normalization.')
+        else:
+            self.logger.info(
+                f'Renormalizing the power spectrum by a factor of {self.pk_renorm:.2f}.')
 
 
 class RegularTrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
