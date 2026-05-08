@@ -331,16 +331,19 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
             pypower.attrs['sum_randoms_weights1']
         self.logger.info(
             f'alpha = sum_data_weights/sum_randoms_weights estimated from pypower is {self.alpha:.2f}')
-        self.logger.info(
-            f'Renormalizing by a factor of {self.pk_renorm:.2f} to match pypower power spectrum normalization.')
 
         if self.geometry is not None:
             if set_shotnoise:
                 self.set_shotnoise(shotnoise=pypower.shotnoise)
+                self.logger.info(
+                    f'Renormalizing the power spectrum by a factor of {self.pk_renorm:.2f} to match pypower shot noise.')
             else:
                 self.pk_renorm = self.geometry.I(2,2) / pypower.wnorm * naverage
                 self.logger.info(
-                    f'Renormalizing by a factor of {self.pk_renorm:.2f} to match pypower power spectrum normalization.')
+                    f'Renormalizing the power spectrum by a factor of {self.pk_renorm:.2f} to match pypower normalization.')
+        else:
+            self.logger.info(
+                f'Renormalizing the power spectrum by a factor of {self.pk_renorm:.2f}.')
 
     def _compute_cosmic_variance(self):
         
