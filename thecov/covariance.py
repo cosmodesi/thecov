@@ -284,7 +284,7 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
 
         return dlikelihood
 
-    def load_pypower_file(self, filename, remove_shotnoise=None, set_shotnoise=False):
+    def load_pypower_file(self, filename, remove_shotnoise=None, set_shotnoise=False, alpha=None):
         '''Load power spectrum from pypower file and set it to be used for the covariance calculation.
 
         Parameters
@@ -296,11 +296,13 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
             If None, will be determined based on the geometry used.
         set_shotnoise : bool, optional
             Whether to rescale shotnoise matching the value in the power spectrum file.
+        alpha : float, optional
+            The data-to-random number ratio affecting shot noise (distinct from the alpha in the geometry object). If not provided/None, will be estimated from the pypower file as sum_data_weights/sum_randoms_weights, which may be incorrect with weight rescaling on either side. With a sufficiently large number of randoms, the effect of alpha on the shot noise should be negligible, so it may be set to 0.
         '''
         from pypower import PowerSpectrumMultipoles
         self.logger.info(f'Loading power spectrum from {filename}.')
         pypower = PowerSpectrumMultipoles.load(filename)
-        return self.load_pypower(pypower, remove_shotnoise=remove_shotnoise, set_shotnoise=set_shotnoise)
+        return self.load_pypower(pypower, remove_shotnoise=remove_shotnoise, set_shotnoise=set_shotnoise, alpha=alpha)
 
     def load_pypower(self, pypower, remove_shotnoise=None, set_shotnoise=False, naverage=1, alpha=None):
         '''Load power spectrum from pypower object and set it to be used for the covariance calculation.
