@@ -16,7 +16,7 @@ Example
 >>> covariance.compute_covariance_box()
 """
 
-import logging, os
+import logging
 import itertools as itt
 
 import numpy as np
@@ -28,106 +28,7 @@ __all__ = ['GaussianCovariance',
            'SuperSampleCovariance']
 
 
-cache_dir = os.path.join(os.path.dirname(__file__), "cache")
-os.makedirs(cache_dir, exist_ok=True)
-class PowerSpectrumMultipolesCovariance(base.MultipoleFourierCovariance):
-    '''Covariance matrix of power spectrum multipoles in a given geometry.
-
-    Attributes
-    ----------
-    geometry : geometry.Geometry
-        Geometry of the survey. Can be a BoxGeometry or a SurveyGeometry object.
-    '''
-
-    def __init__(self, geometry=None):
-        base.MultipoleFourierCovariance.__init__(self)
-        self.logger = logging.getLogger('PowerSpectrumCovariance')
-
-        self.geometry = geometry
-
-        self._pk = {}
-        self._alpha = None
-
-        self.pk_renorm = 1
-
-    @property
-    def alpha(self):
-        '''The value of alpha. This is the alpha used in the Pk measurements.
-           It can be different from the alpha used in the geometry object.
-
-        Returns
-        -------
-        float
-            The value of alpha.
-        '''
-        if self._alpha is None:
-            return self.geometry.alpha
-        return self._alpha
-    
-    @alpha.setter
-    def alpha(self, alpha):
-        '''Sets the value of alpha. This is the alpha used in the P(k) measurements.
-           It can be different from the alpha used in the geometry object.
-
-        Parameters
-        ----------
-        alpha : float
-            The value of alpha.
-        '''
-        self._alpha = alpha
-
-    def compute_covariance(self):
-        '''Compute the covariance matrix for the given geometry and power spectra.
-
-        Parameters
-        ----------
-        ells : tuple, optional
-            Multipoles of the power spectra to have the covariance calculated for.
-        '''
-
-        if isinstance(self.geometry, geometry.BoxGeometry):
-            return self._compute_covariance_box()
-
-        if isinstance(self.geometry, geometry.SurveyGeometry):
-            return self._compute_covariance_survey()
-
-    def _compute_covariance_box(self):
-        raise NotImplementedError
-
-    def _compute_covariance_survey(self):
-        raise NotImplementedError
-
-    @property
-    def shotnoise(self):
-        '''Shotnoise of the sample in the same normalization as the power spectrum.
-
-        Returns
-        -------
-        float
-            Shotnoise value.'''
-        
-        if isinstance(self.geometry, geometry.SurveyGeometry):
-            return self.pk_renorm * (1 + self.alpha) * self.geometry.I('12')/self.geometry.I('22')
-        elif isinstance(self.geometry, geometry.BoxGeometry):
-            return self.pk_renorm * self.geometry.shotnoise
-
-    def set_shotnoise(self, shotnoise):
-        '''Determines the relative normalization of the power spectrum by comparing
-           the estimated FKP shotnoise with the given shotnoise value.
-
-        Parameters
-        ----------
-        shotnoise : float
-            shotnoise with same normalization as the power spectrum.
-        '''
-
-        self.logger.info(f'Estimated shotnoise was {self.shotnoise}')
-        self.logger.info(f'Forcing it to be {shotnoise}.')
-
-        self.pk_renorm *= shotnoise / self.shotnoise
-        self.logger.info(f'Setting pk_renorm to {self.pk_renorm} based on given shotnoise value.')
-
-class GaussianCovariance(PowerSpectrumMultipolesCovariance):
+class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
     '''Gaussian covariance matrix of power spectrum multipoles in a given geometry.
 
     Attributes
@@ -137,7 +38,7 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
     '''
 
     def __init__(self, geometry=None):
-        PowerSpectrumMultipolesCovariance.__init__(
+        base.PowerSpectrumMultipolesCovariance.__init__(
             self, geometry=geometry)
         self.logger = logging.getLogger('GaussianCovariance')
 
@@ -227,13 +128,30 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
 
         return self
 
-    def _diagnose_covariance(self):
+    def _compute_covariance_survey(self):
+        '''Compute the covariance matrix for a survey geometry.
 
+        Returns
+        -------
+        self : GaussianCovariance
+            Covariance matrix.
+        '''
+
+        # terms without the power spectrum have to be multiplied by its relative normalization pk_renorm
+        def func(ik, jk): return self._get_cosmic_variance_term(ik, jk) + \
+            (1 + self.alpha) * self._get_mixed_term(ik, jk) + \
+            (1 + self.alpha)**2 * self._get_shotnoise_term(ik, jk)
+
+        self._set_survey_covariance(self._build_covariance_survey(func), self)
         eigvals = self.eigvals
         if (eigvals < 0).any():
             self.logger.warning(
                 f'Covariance matrix is not positive definite. Worst of {sum(eigvals < 0)} negative eigenvalues is {eigvals.min():.2e}.')
-
+            # extra_modes = int(0.2*self.geometry.kmodes_sampled)
+            # self.geometry.kmodes_sampled += extra_modes
+            # self.logger.warning(f'Sampling {extra_modes} more kmodes. Total = {self.geometry.kmodes_sampled}.')
+            # self.geometry.compute_window_kernels()
+            # self._compute_covariance_survey()
         self.logger.info(
             f'Condition number is {eigvals.max()/eigvals[eigvals > 0].min():.2e}.')
         self.logger.info(
@@ -242,8 +160,131 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
         if not np.allclose(self.cov, self.cov.T):
             self.logger.warning('Covariance matrix is not symmetric.')
 
+        return self
 
-    def load_pypower_file(self, filename, **kwargs):
+    def _build_covariance_survey(self, func):
+
+        # If kbins are set for the covariance matrix but not for the geometry,
+        # set them for the geometry as well
+        if self.is_kbins_set and not self.geometry.is_kbins_set:
+            self.geometry.set_kbins(self.kmin, self.kmax, self.dk)
+
+        cov = np.zeros((self.kbins, self.kbins, 6))
+
+        for ki in range(self.kbins):
+            # Iterate delta_k_max bins either side of the diagonal
+            for kj in range(max(ki - self.geometry.delta_k_max, 0), min(ki + self.geometry.delta_k_max + 1, self.kbins)):
+                cov[ki][kj] = func(ki, kj)
+
+        cov *= (self.pk_renorm / self.geometry.I('22'))**2
+
+        return cov
+
+    @staticmethod
+    def _set_survey_covariance(cov_array, covariance=None):
+        if covariance is None:
+            covariance = base.MultipoleFourierCovariance()
+
+        covariance.set_ell_cov(0, 0, cov_array[:, :, 0])
+        covariance.set_ell_cov(2, 2, cov_array[:, :, 1])
+        covariance.set_ell_cov(4, 4, cov_array[:, :, 2])
+        covariance.set_ell_cov(0, 2, cov_array[:, :, 3])
+        covariance.set_ell_cov(0, 4, cov_array[:, :, 4])
+        covariance.set_ell_cov(2, 4, cov_array[:, :, 5])
+
+        return covariance
+
+    def _get_cosmic_variance_term(self, ik, jk):
+
+        WinKernel = self.geometry.get_window_kernels()
+
+        # delta_k_max off-diagonal elements of the covariance
+        # matrix will be computed each side of the diagonal
+        delta_k = jk - ik + self.geometry.delta_k_max
+
+        P0 = self.get_pk(0, force_return=True, remove_shotnoise=True)
+        P2 = self.get_pk(2, force_return=True)
+        P4 = self.get_pk(4, force_return=True)
+
+        return \
+            WinKernel[ik, delta_k, 0]*P0[ik]*P0[jk] + \
+            WinKernel[ik, delta_k, 1]*P0[ik]*P2[jk] + \
+            WinKernel[ik, delta_k, 2]*P0[ik]*P4[jk] + \
+            WinKernel[ik, delta_k, 3]*P2[ik]*P0[jk] + \
+            WinKernel[ik, delta_k, 4]*P2[ik]*P2[jk] + \
+            WinKernel[ik, delta_k, 5]*P2[ik]*P4[jk] + \
+            WinKernel[ik, delta_k, 6]*P4[ik]*P0[jk] + \
+            WinKernel[ik, delta_k, 7]*P4[ik]*P2[jk] + \
+            WinKernel[ik, delta_k, 8]*P4[ik]*P4[jk]
+
+    def _get_mixed_term(self, ik, jk):
+
+        WinKernel = self.geometry.get_window_kernels()
+
+        # delta_k_max off-diagonal elements of the covariance
+        # matrix will be computed each side of the diagonal
+        delta_k = jk - ik + self.geometry.delta_k_max
+
+        P0 = self.get_pk(0, force_return=True, remove_shotnoise=True)
+        P2 = self.get_pk(2, force_return=True)
+        P4 = self.get_pk(4, force_return=True)
+
+        return WinKernel[ik, delta_k, 9]*(P0[ik] + P0[jk])/2. + \
+            WinKernel[ik, delta_k, 10]*P2[ik] + WinKernel[ik, delta_k, 11]*P4[ik] + \
+            WinKernel[ik, delta_k, 12]*P2[jk] + \
+            WinKernel[ik, delta_k, 13]*P4[jk]
+
+    def _get_shotnoise_term(self, ik, jk):
+
+        WinKernel = self.geometry.get_window_kernels()
+
+        # delta_k_max off-diagonal elements of the covariance
+        # matrix will be computed each side of the diagonal
+        delta_k = jk - ik + self.geometry.delta_k_max
+
+        return WinKernel[ik, delta_k, 14]
+
+    def _get_volume_rescaling_func(self, reference, preproc=None):
+        if preproc is None:
+            def preproc(x): return x
+
+        @np.vectorize
+        def dlikelihood(factor):
+
+            covariance = preproc(self).cov * factor
+            precision_matrix = np.linalg.inv(covariance)
+
+            return np.trace((reference.cov - covariance) @ precision_matrix)
+
+        return dlikelihood
+
+    def _get_shotnoise_rescaling_func(self, reference, preproc=None):
+        if preproc is None:
+            def preproc(x): return x
+
+        @np.vectorize
+        def dlikelihood(alpha):
+
+            def cov_func(ik, jk): return self._get_cosmic_variance_term(ik, jk) + \
+                (1 + alpha) * self.pk_renorm * self._get_mixed_term(ik, jk) + \
+                (1 + alpha)**2 * self.pk_renorm**2 * \
+                self._get_shotnoise_term(ik, jk)
+
+            get_dcov_dalpha = self._build_covariance_survey(self._get_mixed_term) + \
+                2*(1 + alpha) * \
+                self._build_covariance_survey(self._get_shotnoise_term)
+
+            covariance = preproc(self._set_survey_covariance(
+                self._build_covariance_survey(cov_func))).cov
+            precision_matrix = np.linalg.inv(covariance)
+            dcov_dalpha = preproc(
+                self._set_survey_covariance(get_dcov_dalpha)).cov
+
+            return np.trace((reference.cov - covariance) @ precision_matrix @ dcov_dalpha @ precision_matrix)
+
+        return dlikelihood
+
+    def load_pypower_file(self, filename, remove_shotnoise=None, set_shotnoise=False):
         '''Load power spectrum from pypower file and set it to be used for the covariance calculation.
 
         Parameters
@@ -259,7 +300,7 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
         from pypower import PowerSpectrumMultipoles
         self.logger.info(f'Loading power spectrum from {filename}.')
         pypower = PowerSpectrumMultipoles.load(filename)
-        return self.load_pypower(pypower, **kwargs)
+        return self.load_pypower(pypower, remove_shotnoise=remove_shotnoise, set_shotnoise=set_shotnoise)
 
     def load_pypower(self, pypower, remove_shotnoise=None, set_shotnoise=False, naverage=1):
         '''Load power spectrum from pypower object and set it to be used for the covariance calculation.
@@ -323,6 +364,9 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
         P0, P2, P4 = pypower[imin:imax:di].get_power(
             remove_shotnoise=remove_shotnoise, complex=False)
 
+        if set_shotnoise and self.geometry is not None:
+            self.set_shotnoise(shotnoise=pypower.shotnoise)
+
         self.set_galaxy_pk_multipole(P0, 0, has_shotnoise=not remove_shotnoise)
         self.set_galaxy_pk_multipole(P2, 2)
         self.set_galaxy_pk_multipole(P4, 4)
@@ -331,94 +375,12 @@ class GaussianCovariance(PowerSpectrumMultipolesCovariance):
             pypower.attrs['sum_randoms_weights1']
         self.logger.info(
             f'alpha = sum_data_weights/sum_randoms_weights estimated from pypower is {self.alpha:.2f}')
+        self.pk_renorm = self.geometry.I('22') / pypower.wnorm * naverage
         self.logger.info(
             f'Renormalizing by a factor of {self.pk_renorm:.2f} to match pypower power spectrum normalization.')
 
-        if self.geometry is not None:
-            if set_shotnoise:
-                self.set_shotnoise(shotnoise=pypower.shotnoise)
-            else:
-                self.pk_renorm = self.geometry.I(2,2) / pypower.wnorm * naverage
-                self.logger.info(
-                    f'Renormalizing by a factor of {self.pk_renorm:.2f} to match pypower power spectrum normalization.')
 
-    def _compute_cosmic_variance(self):
-        
-        # Load mask coupling Gaunt coefficients if cache exists, otherwise compute them
-        filename = os.path.join(cache_dir, "cosmic_variance_coefficients.npz")
-
-        if os.path.exists(filename):
-            coefficients = base.SparseNDArray.load(filename)
-        else:
-            import sympy.physics.wigner
-
-            # shape_out = l1, l2, l3, l4, m1, m2, m3, m4
-            # shape_in =  la, lb, ma, mb
-            # Only including positive m values, as -m is equivalent to m
-            # when Ylm is real and m is even
-            coefficients = base.SparseNDArray(shape_out=(3,3,3,3,3,3,3,3), shape_in=(7,7,7,7))
-
-            for l1, l2, l3, l4 in itt.product((0,2,4), repeat=4):
-                for m1, m2, m3, m4 in itt.product(*[np.arange(-l, l+1, 2) for l in (l1, l2, l3, l4)]):
-                    for la in np.arange(np.abs(l1-l4), l1+l4+1, 2):
-                        for lb in np.arange(np.abs(l2-l3), l2+l3+1, 2):
-                            for ma, mb in itt.product(*[np.arange(-l, l+1, 2) for l in (la, lb)]):
-
-                                value = np.float64(sympy.physics.wigner.gaunt(l1,l4,la,m1,m4,ma)*\
-                                                   sympy.physics.wigner.gaunt(l2,l3,lb,m2,m3,mb))
-                                if value != 0.:
-                                    # Taking absolute values of all m as -m is equivalent to m
-                                    # when Ylm is real and m is even
-                                    m1, m2, m3, m4 = np.abs(m1), np.abs(m2), np.abs(m3), np.abs(m4)
-                                    ma, mb = np.abs(ma), np.abs(mb)
-                                    coefficients[l1//2,l2//2,
-                                                 l3//2,l4//2,
-                                                 m1//2,m2//2,
-                                                 m3//2,m4//2,
-                                                 la//2,lb//2,
-                                                 ma//2,mb//2] += value
-                                    
-                    for lc in np.arange(np.abs(l1-l2), l1+l2+1, 2):
-                        for la in np.arange(np.abs(lc-l4), lc+l4+1, 2):
-                            for ma, mc in itt.product(*[np.arange(-l, l+1, 2) for l in (la, lc)]):
-                                value = np.float64(sympy.physics.wigner.gaunt(l1,l2,lc,m1,m2,mc)*\
-                                                   sympy.physics.wigner.gaunt(lc,l4,la,mc,m4,ma))
-                                lb, mb = l3, m3
-                                if value != 0.:
-                                    # Taking absolute values of all m as -m is equivalent to m
-                                    # when Ylm is real and m is even
-                                    m1, m2, m3, m4 = np.abs(m1), np.abs(m2), np.abs(m3), np.abs(m4)
-                                    ma, mb = np.abs(ma), np.abs(mb)
-                                    coefficients[l1//2,l2//2,
-                                                 l3//2,l4//2,
-                                                 m1//2,m2//2,
-                                                 m3//2,m4//2,
-                                                 la//2,lb//2,
-                                                 ma//2,mb//2] += value
-            coefficients.save(filename)
-
-        nmesh = 512
-        windows_ab = base.SparseNDArray(shape_out=(7,7), shape_in=(nmesh,nmesh,nmesh))
-        windows_cd = base.SparseNDArray(shape_out=(7,7), shape_in=(nmesh,nmesh,nmesh))
-        
-        ellmax = 12
-        
-        for iell, ell in enumerate(np.arange(0, ellmax, 2)):
-            for im, m in enumerate(np.arange(0, ell+1, 2)):
-                windows_ab[iell,im] = self.geometry['ab'].mesh(ell=ell, m=m, shotnoise=False, fourier=True, threshold=1e-5)
-                windows_cd[iell,im] = self.geometry['cd'].mesh(ell=ell, m=m, shotnoise=False, fourier=True, threshold=1e-5)
-
-        windows_prod = base.SparseNDArray(shape_out=(7,7,7,7), shape_in=(nmesh,nmesh,nmesh))
-
-        for l1, l2 in itt.product((0,2,4), repeat=2):
-            for m1, m2 in itt.product(*[np.arange(0, l+1, 2) for l in (l1, l2)]):
-                windows_prod[l1//2,l2//2,m1//2,m2//2] = windows_ab[l1//2,m1//2]*windows_cd[l2//2,m2//2]
-        # l1, l2, l3, l4, m1, m2, m3, m4, 
-        coefficients @ windows_prod
-
-
-
-class RegularTrispectrumCovariance(PowerSpectrumMultipolesCovariance):
+class RegularTrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
     '''Regular trispectrum covariance matrix of power spectrum multipoles in a given geometry.
 
     Attributes
@@ -576,9 +538,9 @@ class RegularTrispectrumCovariance(PowerSpectrumMultipolesCovariance):
             Covariance matrix.
         '''
 
-        self.calculator.vol = self.geometry.I(2,2)**2 / self.geometry.I(4,4)
-        self.calculator.ndens = self.geometry.I(4,4) / self.geometry.I(3,4)
-        self.calculator.ndens2 = self.geometry.I(4,4) / self.geometry.I(2,4)
+        self.calculator.vol = self.geometry.I('22')**2 / self.geometry.I('44')
+        self.calculator.ndens = self.geometry.I('44') / self.geometry.I('34')
+        self.calculator.ndens2 = self.geometry.I('44') / self.geometry.I('24')
 
         self._build_covariance()
 
@@ -608,7 +570,7 @@ class RegularTrispectrumCovariance(PowerSpectrumMultipolesCovariance):
         return self
 
 
-class SuperSampleCovariance(PowerSpectrumMultipolesCovariance):
+class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
     '''Regular super sample covariance matrix of power spectrum multipoles in a given geometry.
 
     Attributes
@@ -814,7 +776,7 @@ class SuperSampleCovariance(PowerSpectrumMultipolesCovariance):
         LA_term = 1/4. * np.einsum('lik,ij,j->lk', Z12, sigma22x10, Z1)
         # shape is (ell, k)
         LA_term += b2 * P_kaiser/b1**2 * \
-            self.geometry.I(3,2)/self.geometry.I(2,2)/self.geometry.I(1,0)
+            self.geometry.I('32')/self.geometry.I('22')/self.geometry.I('10')
 
         # output shape is (lmkq) = (l1,l2,k1,k2) final shape of covariance
         covLA = np.einsum('lk,mq  ->lmkq', P_kaiser, P_kaiser) * sigma10x10

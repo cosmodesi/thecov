@@ -1,7 +1,6 @@
 """This module contains math functions for the covariance calculation
 """
 import numpy as np
-import scipy
 
 def r2c_to_c2c_3d(fourier):
     """Completes a 3D Fourier array generated using PFFT's r2c method with the elements

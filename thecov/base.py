@@ -1,68 +1,22 @@
 '''Module containing basic classes to deal with covariance matrices.'''
 
-import os, time, copy
+import os
+import itertools as itt
+import copy
 
 import numpy as np
-import scipy
 
-from . import utils, math
+from . import utils, math, geometry
 import logging
 
 __all__ = ['Covariance',
            'MultipoleCovariance',
-           'LinearBinning',
+           'FourierBinned',
            'FourierCovariance',
-           'MultipoleFourierCovariance']
+           'MultipoleFourierCovariance',
+           'PowerSpectrumMultipolesCovariance']
 
-
-class BaseClass:
-    """
-    Base class that implements copy, save/load, etc.
-    """
-    def __copy__(self):
-        new = self.__class__.__new__(self.__class__)
-        new.__dict__.update(self.__dict__)
-        return new
-
-    def copy(self, **kwargs):
-        new = self.__copy__()
-        new.__dict__.update(kwargs)
-        return new
-
-    def __setstate__(self, state):
-        self.__dict__.update(state)
-
-    @classmethod
-    def from_state(cls, state):
-        new = cls.__new__(cls)
-        new.__setstate__(state)
-        return new
-
-    @property
-    def with_mpi(self):
-        """Whether to use MPI."""
-        return getattr(self, 'mpicomm', None) is not None and self.mpicomm.size > 1
-
-    def save(self, filename):
-        """Save to ``filename``."""
-        start = time.time()
-        if not self.with_mpi or self.mpicomm.rank == 0:
-            self.log_info('Saving {}.'.format(filename))
-            utils.mkdir(os.path.dirname(filename))
-            np.save(filename, self.__getstate__(), allow_pickle=True)
-        # if self.with_mpi:
-        #     self.mpicomm.Barrier()
-
-        if hasattr(self, 'logger'):
-            self.logger.info(f'Saved to {filename} in {time.time() - start:.3f}s.')
-
-    @classmethod
-    def load(cls, filename):
-        state = np.load(filename, allow_pickle=True)[()]
-        new = cls.from_state(state)
-        return new
-
-class Covariance(BaseClass):
+class Covariance:
     '''A class that represents a covariance matrix.
     Implements basic operations such as correlation matrix computation, etc.
     '''
@@ -76,7 +30,7 @@ class Covariance(BaseClass):
             (n,n) numpy array with elements corresponding to the covariance.
         '''
 
-        self._cov = covariance
+        self._covariance = covariance
 
     @property
     def cov(self):
@@ -88,7 +42,7 @@ class Covariance(BaseClass):
             (n,n) numpy array corresponding to the elements of the covariance matrix.
         '''
 
-        return self._cov
+        return self._covariance
 
     @cov.setter
     def cov(self, covariance):
@@ -100,7 +54,7 @@ class Covariance(BaseClass):
             (n,n) numpy array with elements corresponding to the covariance.
         '''
 
-        self._cov = covariance
+        self._covariance = covariance
 
     @property
     def cor(self):
@@ -135,7 +89,7 @@ class Covariance(BaseClass):
         Covariance
             Covariance object corresponding to the symmetrized covariance matrix.
         '''
-        new_cov = self.copy()
+        new_cov = copy.deepcopy(self)
         new_cov.symmetrize()
         return new_cov
     
@@ -150,7 +104,7 @@ class Covariance(BaseClass):
         self.cov = np.einsum('ij,jk,kl->il', eigvecs, np.diag(eigvals), eigvecs.T)
     
     def regularized(self):
-        new_cov = self.copy()
+        new_cov = copy.deepcopy(self)
         new_cov.regularize()
         return new_cov
 
@@ -176,9 +130,10 @@ class Covariance(BaseClass):
             Covariance object corresponding to the transpose of the covariance matrix.
         '''
 
-        new_cov = self.copy()
-        new_cov.cov = new_cov.cov.T
-        return new_cov
+        obj = copy.deepcopy(self)
+        obj.cov = obj.cov.T
+
+        return obj
 
     @property
     def shape(self):
@@ -231,6 +186,18 @@ class Covariance(BaseClass):
 
         return np.linalg.eigvals(self.cov)
 
+    def save(self, filename):
+        '''Saves the covariance as a .npz file with a specified filename.
+
+        Parameters
+        -------
+        filename : string
+            The name of the file where the covariance matrix will be saved.
+        '''
+        utils.mkdir(os.path.dirname(filename))
+        np.savez(filename if filename.strip(
+        )[-4:] in ('.npz', '.npy') else f'{filename}.npz', covariance=self.cov)
+
     def savetxt(self, filename):
         '''Saves the covariance as a text file with a specified filename.
 
@@ -241,6 +208,19 @@ class Covariance(BaseClass):
         '''
         utils.mkdir(os.path.dirname(filename))
         np.savetxt(filename, self.cov)
+
+    @classmethod
+    def load(cls, filename):
+        '''Loads the covariance from a .npz file with a specified filename.
+
+        Parameters
+        -------
+        filename : string
+            The name of the file where the covariance matrix will be loaded from.
+        '''
+
+        with np.load(filename, mmap_mode='r') as data:
+            return cls(data['covariance'])
 
     @classmethod
     def loadtxt(cls, *args, **kwargs):
@@ -290,94 +270,26 @@ class MultipoleCovariance(Covariance):
         The correlation matrix.
     '''
 
-    def __init__(self, symmetric=False):
+    def __init__(self):
         self._multipole_covariance = {}
-        self._symmetric = symmetric
+        self._ells = []
+        self._mshape = (0, 0)
 
-    def set_ell_cov(self, l1, l2, cov):
-        '''Sets the covariance matrix for a given pair of multipoles.
+    def __add__(self, y):
+        if isinstance(y, MultipoleCovariance):
+            assert self.ells == y.ells, "ells are not the same"
 
-        Parameters
-        ----------
-        l1 : int
-            The first multipole.
-        l2 : int
-            The second multipole.
-        cov : Covariance or numpy.ndarray
-            The covariance matrix. Can be an instance of Covariance or a numpy array.
-        '''
+        return MultipoleCovariance.from_array(self.cov + (y.cov if isinstance(y, Covariance) else y), self.ells)
 
-        if self._symmetric and l1 > l2:
-            return self.set_ell_cov(l2, l1, cov.T if cov is not None else None)
+    def __sub__(self, y):
+        return self.__add__(-y)
 
-        self._multipole_covariance[l1, l2] = cov
+    def __mul__(self, y):
+        return MultipoleCovariance.from_array(self.cov * y, self.ells)
         
 
-    def get_ell_cov(self, l1, l2, cls=Covariance):
-        '''Returns the covariance matrix for a given pair of multipoles.
-
-        Parameters
-        ----------
-        l1
-            the first multipole.
-        l2
-            the second multipole.
-
-        Returns
-        -------
-        Covariance
-            A Covariance object corresponding to the covariance matrix for the given multipoles.
-        '''
-
-        if self._symmetric and l1 > l2:
-            return self.get_ell_cov(l2, l1, cls=cls).T
-
-        if (l1, l2) in self._multipole_covariance:
-            return self._multipole_covariance[l1, l2]
-
-    def is_ell_set(self, l1, l2):
-        return (l1,l2) in self._multipole_covariance.keys()
-
-    @property
-    def ells(self):
-        '''Returns sorted lists of unique first and second multipoles used in the covariance matrices.
-
-        Returns
-        -------
-        tuple of two lists
-        '''
-        ells1, ells2 = set(), set()
-        
-        for (l1, l2) in self._multipole_covariance.keys():
-            ells1.add(l1)
-            ells2.add(l2)
-            
-        return sorted(ells1), sorted(ells2)
-
-    def has_ells(self, l1, l2):
-        if self._symmetric and l1 > l2:
-            return self.has_ells(l2, l1)
-        return (l1, l2) in self._multipole_covariance.keys()
-
-    @property
-    def symmetric(self):
-        return self._symmetric
-
-    @ells.setter
-    def ells(self, ells):
-        '''Initializes all entries in the self._multipole_covariance dict based on the input ells tuple.
-
-        Parameters
-        ----------
-        ells : tuple
-            A tuple of two lists: (l1s, l2s), where l1s and l2s are lists of multipoles.
-        '''
-        
-        # Initialize the covariance matrices for each pair
-        for l1 in ells[0]:
-            for l2 in ells[1]:
-                if not self.has_ells(l1,l2):
-                    self.set_ell_cov(l1, l2, None)
+    def __truediv__(self, y):
+        return MultipoleCovariance.from_array(self.cov / y, self.ells)
 
     @property
     def cov(self):
@@ -390,9 +302,12 @@ class MultipoleCovariance(Covariance):
             An (n,n) numpy array corresponding to the elements of the covariance matrix.
         '''
 
-        ells1, ells2 = self.ells
-
-        return np.vstack([np.hstack([self.get_ell_cov(l1, l2).cov for l2 in ells2]) for l1 in ells1])
+        ells = self.ells
+        cov = np.zeros(np.array(self._mshape)*len(ells))
+        for (i, l1), (j, l2) in itt.product(enumerate(ells), enumerate(ells)):
+            cov[i*self._mshape[0]:(i+1)*self._mshape[0],
+                j*self._mshape[1]:(j+1)*self._mshape[1]] = self.get_ell_cov(l1, l2).cov
+        return cov
 
     @cov.setter
     def cov(self, cov):
@@ -405,41 +320,110 @@ class MultipoleCovariance(Covariance):
             An (n,n) numpy array corresponding to the elements of the covariance matrix.
         '''
 
-        ells1, ells2 = self.ells
+        self.set_full_cov(cov, self.ells)
 
-        assert cov.ndim == 2, "Covariance should be a matrix (ndim == 1)."
-        assert cov.shape[0] % len(ells1) == 0, \
-            "Can't resolve covariance structure as shape is not a multiple of the number of ells."
-        assert cov.shape[1] % len(ells2) == 0, \
-            "Can't resolve covariance structure as shape is not a multiple of the number of ells."
+    @property
+    def ells(self):
+        '''The multipoles for which the covariance matrix is defined. Sorted in ascending order.
 
-        size1 = cov.shape[0]//len(ells1)
-        size2 = cov.shape[1]//len(ells2)
+        Returns
+        -------
+        tuple
+            A tuple of multipole values.
+        '''
 
-        for i1,l1 in enumerate(ells1):
-            for i2,l2 in enumerate(ells2):
-                self.set_ell_cov(l1,l2,Covariance(cov[i1*size1:(i1+1)*size1,i2*size2:(i2+1)*size2]))
+        return sorted(self._ells)
 
-    def __add__(self, y):
-        assert isinstance(y, MultipoleCovariance)
+    def get_ell_cov(self, l1, l2, force_return=False, cls=Covariance):
+        '''Returns the covariance matrix for a given pair of multipoles.
 
-        cov = MultipoleCovariance(symmetric=self.symmetric and y.symmetric)
-        ells1, ells2 = self.ells
-        for l1 in ells1:
-            for l2 in ells2:
-                cov.set_ell_cov(l1,l2, self.get_ell_cov(l1,l2) + y.get_ell_cov(l1,l2))
+        Parameters
+        ----------
+        l1
+            the first multipole.
+        l2
+            the second multipole.
+        force_return, boolean, float, optional
+            If True, returns a zero matrix if the covariance matrix is not defined.
+            If `force_return` is a float, returns a matrix with the given value.
+
+        Returns
+        -------
+        Covariance
+            A Covariance object corresponding to the covariance matrix for the given multipoles.
+        '''
+
+        if l1 > l2:
+            return self.get_ell_cov(l2, l1).T
+
+        if (l1, l2) in self._multipole_covariance:
+            return self._multipole_covariance[l1, l2]
+        elif type(force_return) != bool:
+            return cls(force_return*np.ones(self._mshape))
+        elif force_return:
+            return cls(np.zeros(self._mshape))
+
+    def set_ell_cov(self, l1, l2, cov, cls=Covariance):
+        '''Sets the covariance matrix for a given pair of multipoles.
+
+        Parameters
+        ----------
+        l1 : int
+            The first multipole.
+        l2 : int
+            The second multipole.
+        cov : Covariance or numpy.ndarray
+            The covariance matrix. Can be an instance of Covariance or a numpy array.
+        '''
+
+        if l1 > l2:
+            return self.set_ell_cov(l2, l1, cov.T)
+
+        if self._ells == []:
+            self._mshape = cov.shape
+
+        # assert cov.shape == self._mshape, "ell covariance has shape inconsistent with other ells"
+
+        if l1 not in self.ells:
+            self._ells.append(l1)
+        if l2 not in self.ells:
+            self._ells.append(l2)
+
+        cov = cov if isinstance(cov, cls) else cls(cov)
+
+        self._multipole_covariance[l1, l2] = cov
+        
         return cov
 
-    def __sub__(self, y):
-        return self.__add__(-y)
+    def set_full_cov(self, cov_array, ells=(0, 2, 4)):
+        '''Sets the full covariance matrix from stacked covariances for different multipoles.
 
-    def __mul__(self, y):
-        cov = self.deepcopy()
-        cov.foreach(lambda x: x*y)
-        return cov
+        Parameters
+        ----------
+        cov_array
+            (n,n) numpy array with elements corresponding to the covariance.
+        ells
+            the multipoles for which the covariance matrix is defined.
 
-    def __truediv__(self, y):
-        return self * (1/y)
+        Returns
+        -------
+        MultipoleCovariance
+            A MultipoleCovariance object.
+        '''
+
+        assert cov_array.ndim == 2, "Covariance should be a matrix (ndim == 1)."
+        assert cov_array.shape[0] == cov_array.shape[1], "Covariance matrix should be a square matrix."
+        assert cov_array.shape[0] % len(ells) == 0, \
+            "Covariance matrix shape should be a multiple of the number of ells."
+
+        c = cov_array
+        self._ells = ells
+        self._mshape = tuple(np.array(cov_array.shape)//len(ells))
+
+        for (i, l1), (j, l2) in itt.combinations_with_replacement(enumerate(ells), r=2):
+            self.set_ell_cov(l1, l2, c[i*c.shape[0]//len(ells):(i+1)*c.shape[0]//len(ells),
+                                       j*c.shape[1]//len(ells):(j+1)*c.shape[1]//len(ells)])
+        return self
     
     def foreach(self, func):
         '''Applies a function to each covariance matrix.
@@ -457,12 +441,12 @@ class MultipoleCovariance(Covariance):
 
 
     @classmethod
-    def from_array(cls, cov):
+    def from_array(cls, *args, **kwargs):
         '''Creates a MultipoleCovariance object from a numpy array corresponding to the full covariance matrix.
 
         Parameters
         ----------
-        cov
+        cov_array
             (n,n) numpy array with elements corresponding to the covariance.
         ells
             the multipoles for which the covariance matrix is defined.
@@ -474,13 +458,30 @@ class MultipoleCovariance(Covariance):
         '''
 
         cov = cls()
-        cov.cov = cov
+        cov.set_full_cov(*args, **kwargs)
 
         return cov
 
+    def loadtxt(self, *args, **kwargs):
+        '''Loads the covariance from a text file with a specified filename.
 
-class LinearBinning:
-    '''A class to represent an observable linearly binned in wavenumber k.
+        Parameters
+        ----------
+        filename
+            The name of the file where the covariance matrix will be loaded from.
+
+        Returns
+        -------
+        MultipoleCovariance
+            A MultipoleCovariance object.
+        '''
+
+        self.set_full_cov(np.loadtxt(*args, **kwargs))
+        return self
+
+
+class FourierBinned:
+    '''A class to represent a power spectrum binned in wavenumber k. Only linear binning is supported.
 
     Attributes
     ----------
@@ -490,13 +491,21 @@ class LinearBinning:
         The maximum value of the wavenumber k.
     dk: float
         The spacing between k-bins.
+    nmodes: numpy.ndarray, optional
+        The number of modes to be used in the calculation. It is an optional parameter.
+        If omitted, it is calculated from the volume of spherical shells.
+
+    Methods
+    -------
+    set_kbins
+        This function defines the k-bins. Only linear binning is supported.
     '''
 
-    def __init__(self, kmin=None, kmax=None, dk=None) -> None:
-        self.kmin, self.kmax, self.dk = kmin, kmax, dk
+    def __init__(self) -> None:
+        self.kmin, self.kmax, self.dk, self._nmodes = None, None, None, None
 
-    def set_kbins(self, kmin, kmax, dk):
-        '''This function defines the k-bins.
+    def set_kbins(self, kmin, kmax, dk, nmodes=None):
+        '''This function defines the k-bins. Only linear binning is supported.
 
         Parameters
         ----------
@@ -515,6 +524,8 @@ class LinearBinning:
         self.kmax = kmax
         self.kmin = kmin
 
+        self._nmodes = nmodes
+
     @property
     def is_kbins_set(self):
         '''Check if k-bins were defined.
@@ -523,7 +534,10 @@ class LinearBinning:
         -------
             bool, True if k-bins were defined, False otherwise.
         '''
-        return None not in (self.dk, self.kmin, self.kmax)
+        if hasattr(self, 'dk') and hasattr(self, 'kmin') and hasattr(self, 'kmax'):
+            return None not in (self.dk, self.kmin, self.kmax)
+        else:
+            return False
 
     @property
     def kbins(self):
@@ -590,6 +604,22 @@ class LinearBinning:
         return 2*np.pi/self.volume**(1/3)
 
     @property
+    def volume(self):
+        '''Returns the volume of the object. If not available, return that of the associated geometry.
+
+        Returns
+        -------
+        float
+            The volume of the object.
+        '''
+
+        if hasattr(self, '_volume'):
+            return self._volume
+
+        if hasattr(self, 'geometry'):
+            return self.geometry.volume
+
+    @property
     def nmodes(self):
         '''This function calculates the number of modes per k-bin shell. If nmodes was not provided, it is
         extimated from the volume of each shell.
@@ -600,7 +630,7 @@ class LinearBinning:
             The number of modes per k-bin shell.
         '''
 
-        if hasattr(self, '_nmodes'):
+        if self._nmodes is not None:
             return self._nmodes
 
         return math.nmodes(self.volume, self.kedges[:-1], self.kedges[1:])
@@ -616,88 +646,74 @@ class LinearBinning:
         '''
 
         self._nmodes = nmodes
+        return nmodes
 
-class FourierCovariance(Covariance):
+class FourierCovariance(Covariance, FourierBinned):
 
-    def __init__(self, kbin1=None, kbin2=None):
-        if kbin2 is None:
-            kbin2 = kbin1
-
-        self.kbin1 = kbin1
-        self.kbin2 = kbin2
-
-    def kcut(self, kmin=None, kmax=None):
-        if kmin is None:
-            kmin = max(self.kbin1.kmin, self.kbin2.kmin)
-
-        if kmax is None:
-            kmax = min(self.kbin1.kmax, self.kbin2.kmax)
-
-        imin1 = (self.kbin1.kmid >= kmin).argmax()
-        imin2 = (self.kbin2.kmid >= kmin).argmax()
-
-        imax1 = len(self.kbin1.kmid) if (self.kbin1.kmid <= kmax).all() else (self.kbin1.kmid <= kmax).argmin()
-        imax2 = len(self.kbin2.kmid) if (self.kbin2.kmid <= kmax).all() else (self.kbin2.kmid <= kmax).argmin()
-
-        self.cov = self.cov[imin1:imax1, imin2:imax2]
-
-        self.kbin1.kmin, self.kbin1.kmax = kmin, kmax
-        self.kbin2.kmin, self.kbin2.kmax = kmin, kmax
-
-        return self
-
+    def __init__(self, cov):
+        Covariance.__init__(self, cov)
+        FourierBinned.__init__(self)
+    
     @property
     def kmid_matrices(self):
-        k1 = np.einsum('i,j->ij', self.kbin1.kmid, np.ones(self.kbin2.kbins))
-        k2 = np.einsum('i,j->ji', self.kbin2.kmid, np.ones(self.kbin1.kbins))
+        k1 = np.einsum('i,j->ij', self.kmid, np.ones_like(self.kmid))
+        k2 = k1.T
 
         return k1, k2
 
     @property
     def kmin_matrices(self):
-        k1 = np.einsum('i,j->ij', self.kbin1.kedges[:-1], np.ones(self.kbin2.kbins))
-        k2 = np.einsum('i,j->ji', self.kbin2.kedges[:-1], np.ones(self.kbin1.kbins))
+        k1 = np.einsum('i,j->ij', self.kedges[:-1], np.ones_like(self.kmid))
+        k2 = k1.T
 
         return k1, k2
+
+    def kcut(self, kmin=None, kmax=None):
+        if kmin is None:
+            kmin = self.kmin
+
+        if kmax is None:
+            kmax = self.kmax
+
+        imin = (self.kmid >= kmin).argmax()
+        imax = len(self.kmid) if (self.kmid <= kmax).all() else (self.kmid <= kmax).argmin()
+
+        self._covariance = self._covariance[imin:imax, imin:imax]
+        self.kmin, self.kmax = kmin, kmax
+
+        return self
 
 class MultipoleFourierCovariance(MultipoleCovariance, FourierCovariance):
 
     def __init__(self):
         MultipoleCovariance.__init__(self)
-        FourierCovariance.__init__(self)
+        FourierBinned.__init__(self)
         self.logger = logging.getLogger('MultipoleFourierCovariance')
 
     @property
     def kmid_ell_matrices(self):
-        ells1, ells2 = self.ells
-
-        kfull1 = np.concatenate([self.kbin1.kmid for _ in ells1])
-        kfull2 = np.concatenate([self.kbin2.kmid for _ in ells2])
-
-        k1 = np.einsum('i,j->ij', kfull1, np.ones_like(kfull2))
-        k2 = np.einsum('i,j->ji', kfull2, np.ones_like(kfull1))
+        kfull = np.concatenate([self.kmid for _ in self.ells])
+        k1 = np.einsum('i,j->ij', kfull, np.ones_like(kfull))
+        k2 = k1.T
 
         return k1, k2
 
     @property
     def ell_matrices(self):
-        ells1, ells2 = self.ells
+        ell_array = np.einsum('i,j->ij', self.ells, np.ones(self.kbins)).flatten()
 
-        kells1 = np.einsum('i,j->ij', ells1, np.ones(self.kbin1.kbins)).flatten()
-        kells2 = np.einsum('i,j->ji', ells2, np.ones(self.kbin2.kbins)).flatten()
-
-        ell1 = np.einsum('i,j->ij', kells1, np.ones_like(kells2))
-        ell2 = np.einsum('i,j->ji', kells2, np.ones_like(kells1))
+        ell1 = np.einsum('i,j->ij', ell_array, np.ones_like(ell_array))
+        ell2 = ell1.T
 
         return ell1, ell2
 
-    def savecsv(self, filename, fmt=['%.d', '%.d', '%.4f', '%.4f', '%.8e']):
+    def savecsv(self, filename, ells_both_ways=False, fmt=['%.d', '%.d', '%.4f', '%.4f', '%.8e']):
         k1, k2 = self.kmid_ell_matrices
         ell1, ell2 = self.ell_matrices
 
         cov = self.cov
 
-        mask = ell1 <= ell2 if self.symmetric else np.ones_like(ell1, dtype=bool)
+        mask = ell1 <= ell2 if not ells_both_ways else np.ones_like(ell1, dtype=bool)
         utils.mkdir(os.path.dirname(filename))
         np.savetxt(filename, np.concatenate([ell1[mask].reshape(-1, 1),
                                              ell2[mask].reshape(-1, 1),
@@ -705,41 +721,39 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierCovariance):
                                                k2[mask].reshape(-1, 1),
                                               cov[mask].reshape(-1, 1)], axis=1), fmt=fmt, header='ell1 ell2 kmid1 kmid2 cov')
     def loadcsv(self, filename):
-        raise NotImplementedError
+        ell1, ell2, k1, k2, value = np.loadtxt(filename).T
 
-        # ell1, ell2, k1, k2, value = np.loadtxt(filename).T
+        k = np.unique(k1)
+        kbins = len(k)
 
-        # k1 = np.unique(k1)
-        # kbins = len(k)
+        assert np.allclose(k, np.unique(k2)), "k1 and k2 are not consistent"
 
-        # assert np.allclose(k, np.unique(k2)), "k1 and k2 are not consistent"
+        dk = np.mean(np.diff(k))
+        kmin = k.min() - dk/2
+        kmax = k.max() + dk/2
 
-        # dk = np.mean(np.diff(k))
-        # kmin = k.min() - dk/2
-        # kmax = k.max() + dk/2
+        ells = np.unique(ell1)
+        assert np.allclose(ells, np.unique(ell2)), "ell1 and ell2 are not consistent"
 
-        # ells = np.unique(ell1)
-        # assert np.allclose(ells, np.unique(ell2)), "ell1 and ell2 are not consistent"
+        ells_both_ways = len(value) == (len(ells)*kbins)**2
+        ells_one_way   = len(value) == (len(ells)**2 + len(ells))/2 * kbins**2
 
-        # ells_both_ways = len(value) == (len(ells)*kbins)**2
-        # ells_one_way   = len(value) == (len(ells)**2 + len(ells))/2 * kbins**2
+        assert ells_one_way or ells_both_ways, 'length of covariance file doesn\'nt match'
 
-        # assert ells_one_way or ells_both_ways, 'length of covariance file doesn\'nt match'
+        self.set_kbins(kmin, kmax, dk)
 
-        # self.set_kbins(kmin, kmax, dk)
+        assert np.allclose(np.unique(k1), self.kmid), "k bins are not linearly spaced"
 
-        # assert np.allclose(np.unique(k1), self.kmid), "k bins are not linearly spaced"
+        kmid_matrix = np.einsum('i,j->ij', k, np.ones_like(k))
 
-        # kmid_matrix = np.einsum('i,j->ij', k, np.ones_like(k))
+        for l1, l2 in itt.combinations_with_replacement(ells, r=2):
+            block_mask = (ell1 == l1) & (ell2 == l2)
+            assert np.allclose(k1[block_mask].reshape(kmid_matrix.shape),   kmid_matrix)
+            assert np.allclose(k2[block_mask].reshape(kmid_matrix.T.shape), kmid_matrix.T)
+            c = value[block_mask].reshape(kbins, kbins)
+            self.set_ell_cov(l1, l2, c)
 
-        # for l1, l2 in itt.combinations_with_replacement(ells, r=2):
-        #     block_mask = (ell1 == l1) & (ell2 == l2)
-        #     assert np.allclose(k1[block_mask].reshape(kmid_matrix.shape),   kmid_matrix)
-        #     assert np.allclose(k2[block_mask].reshape(kmid_matrix.T.shape), kmid_matrix.T)
-        #     c = value[block_mask].reshape(kbins, kbins)
-        #     self.set_ell_cov(l1, l2, c)
-
-        # return self
+        return self
 
     @classmethod
     def fromcsv(cls, filename):
@@ -750,13 +764,19 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierCovariance):
     def set_ell_cov(self, l1, l2, cov, cls=FourierCovariance):
         cov = super().set_ell_cov(l1, l2, cov, cls=cls)
         if not cov.is_kbins_set:
-            cov.set_kbins(self.kmin, self.kmax, self.dk)
+            cov.set_kbins(self.kmin, self.kmax, self.dk, self._nmodes)
         return cov
     
-    def get_ell_cov(self, l1, l2, cls=FourierCovariance):
-        return super().get_ell_cov(l1, l2, cls)
+    def get_ell_cov(self, l1, l2, force_return=False, cls=FourierCovariance):
+        return super().get_ell_cov(l1, l2, force_return, cls)
 
     def kcut(self, kmin=None, kmax=None):
+        if kmin is None:
+            kmin = self.kmin
+
+        if kmax is None:
+            kmax = self.kmax
+
         self.foreach(lambda cov: cov.kcut(kmin, kmax))
         self.set_kbins(kmin, kmax, self.dk)
         
@@ -768,168 +788,105 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierCovariance):
         size = (kmax - kmin)/dk
         size = (np.round(size) if np.allclose(np.round(size), size) else size).astype(int)
         self._mshape = (size, size)
-        self.foreach(lambda cov: cov.set_kbins(kmin, kmax, dk, nmodes))
         return super().set_kbins(kmin, kmax, dk, nmodes)
 
-class SparseNDArray:
-    """
-    A class to represent a sparse ND array using scipy.sparse.csr_matrix.
-    Indices are split between shape_out and shape_in, as if the array is
-    a 2D matrix (shape_out x shape_in). Matrix multiplication is done using
-    the @ operator and requires the shapes to be compatible, i.e., shape_in
-    of the leftmost array must match shape_out of the rightmost array.
-    """
-    def __init__(self, shape_out, shape_in):
-        self.shape_in = np.asarray(shape_in).astype(int)
-        self.shape_out = np.asarray(shape_out).astype(int)
-        self._matrix = scipy.sparse.csr_matrix((np.prod(shape_out), np.prod(shape_in)))
 
-    def _nd_to_2d_indices(self, *indices):
-        indices = np.asarray(indices).astype(int)
-        if len(indices) == len(self.shape_out) + len(self.shape_in):
-            i = np.ravel_multi_index(indices[:len(self.shape_out)], self.shape_out)
-            j = np.ravel_multi_index(indices[len(self.shape_out):], self.shape_in)
-            return i,j
-        elif len(indices) == len(self.shape_out):
-            i = np.ravel_multi_index(indices, self.shape_out)
-            # j = np.arange(np.prod(self.shape_in))
-            return i
-        
-    
-    def __setitem__(self, indices, value):
-        indices = np.asarray(indices).astype(int)
-        if len(indices) == len(self.shape_out) + len(self.shape_in):
-            try:
-                self._matrix[self._nd_to_2d_indices(*indices)] = value
-            except IndexError:
-                raise IndexError(f"Indices {indices} are out of bounds for array with shape shape_out={self.shape_out}, shape_in={self.shape_in}.")
-        elif len(indices) == len(self.shape_out):
-            if isinstance(value, SparseNDArray):
-                self._matrix[self._nd_to_2d_indices(*indices)] = value._matrix
-            else:
-                self._matrix[self._nd_to_2d_indices(*indices)] = value.flatten()
-        else:
-            raise ValueError(f"Invalid number of indices: {len(indices)}. Expected {len(self.shape_out) + len(self.shape_in)} or {len(self.shape_out)}.")
+class PowerSpectrumMultipolesCovariance(MultipoleFourierCovariance):
+    '''Covariance matrix of power spectrum multipoles in a given geometry.
 
-    def __getitem__(self, indices):
-        indices = np.asarray(indices).astype(int)
-        return self._matrix[self._nd_to_2d_indices(*indices)]
+    Attributes
+    ----------
+    geometry : geometry.Geometry
+        Geometry of the survey. Can be a BoxGeometry or a SurveyGeometry object.
+    '''
 
-    def __repr__(self):
-        return f"SparseNDArray(shape_out={self.shape_out} -> {np.prod(self.shape_out)}, shape_in={self.shape_in} -> {np.prod(self.shape_in)}, nnz={self._matrix.nnz})"
-    
-    def to_dense(self):
-        """
-        Convert the sparse matrix back to a dense ND array.
-        """
-        return self._matrix.toarray().reshape(self.shape_out.tolist() + self.shape_in.tolist())
+    def __init__(self, geometry=None):
+        MultipoleFourierCovariance.__init__(self)
+        self.logger = logging.getLogger('PowerSpectrumCovariance')
 
-    @staticmethod
-    def from_dense(dense_array, shape_out=None, shape_in=None):
-        """
-        Create a SparseNDArray from a dense array.
-        """
-        if shape_out is None:
-            shape_out = dense_array.shape[:-len(dense_array.shape)//2]
-        if shape_in is None:
-            shape_in = dense_array.shape[len(dense_array.shape)//2:]
-        sparse_array = SparseNDArray(shape_in, shape_out)
-        sparse_array._matrix = scipy.sparse.csr_matrix(dense_array.reshape(np.prod(shape_out), np.prod(shape_in)))
-        return sparse_array
-    
-    def __add__(self, other):
-        if isinstance(other, SparseNDArray):
-            assert (self.shape_in == other.shape_in) and (self.shape_out == other.shape_out), \
-                "Shapes do not match for multiplication."
-            
-            import copy
-            other = copy.deepcopy(other)
-            other._matrix += self._matrix
-            return other
-        else:
-            raise ValueError(f"Operation not supported between {self.__class__} and {other.__class__}.")
-        
-    def __mul__(self, other):
-        if isinstance(other, SparseNDArray):
-            assert (self.shape_in == other.shape_in) and (self.shape_out == other.shape_out), \
-                "Shapes do not match for multiplication."
-            
-            import copy
-            other = copy.deepcopy(other)
-            other._matrix *= self._matrix
-            return other
-        else:
-            raise ValueError(f"Operation not supported between {self.__class__} and {other.__class__}.")
-        
-    def __matmul__(self, other):
-        if isinstance(other, SparseNDArray):
-            assert (np.all(self.shape_in == other.shape_out)), \
-                "Shapes do not match for matrix multiplication."
-            other = copy.deepcopy(other)
-            other._matrix = self._matrix.dot(other._matrix)
-            other.shape_out = self.shape_out
-            return other
-        elif isinstance(other, np.ndarray):
-            result = copy.deepcopy(self)
-            result._matrix = scipy.sparse.csr_matrix(self._matrix.dot(other.reshape(np.prod(self.shape_in), -1)))
-            result.shape_in = other.shape[len(self.shape_in):]
-            return result
-        
-        else:
-            raise ValueError(f"Operation not supported between {self.__class__} and {other.__class__}.")
-        
-    def __sizeof__(self):
-        return self._matrix.data.nbytes + self._matrix.indptr.nbytes + self._matrix.indices.nbytes
-    
-    def save(self, filename):
-        """
-        Save the sparse matrix to a file.
-        """
-        np.savez(filename,
-                 data=self._matrix.data,
-                 indices=self._matrix.indices,
-                 indptr=self._matrix.indptr,
-                 shape=self._matrix.shape,
-                 shape_out=self.shape_out,
-                 shape_in=self.shape_in)
+        self.geometry = geometry
 
-    @classmethod
-    def load(cls, filename):
-        """
-        Load the sparse matrix from a file.
-        """
-        loader = np.load(filename)
-        obj = cls(loader['shape_out'], loader['shape_in'])
-        obj._matrix = scipy.sparse.csr_matrix((loader['data'],
-                                               loader['indices'],
-                                               loader['indptr']),
-                                               shape=loader['shape'])
-        return obj
+        self._pk = {}
+        self._alpha = None
 
-    def reshape(self, shape_out=None, shape_in=None):
-        """
-        Reshape the sparse matrix.
-        """
-        result = copy.deepcopy(self)
-        result._matrix = self._matrix.reshape(np.prod(shape_out), np.prod(shape_in))
-        if shape_out is not None:
-            result.shape_out = shape_out
-        if shape_in is not None:
-            result.shape_in = shape_in
-        return result
+        self.pk_renorm = 1
 
-    def transpose(self):
-        """
-        Transpose the sparse matrix.
-        """
-        result = copy.deepcopy(self)
-        result._matrix = self._matrix.transpose()
-        result.shape_out, result.shape_in = self.shape_in, self.shape_out
-        return result
-    
     @property
-    def T(self):
-        """
-        Transpose the sparse matrix.
-        """
-        return self.transpose()
+    def alpha(self):
+        '''The value of alpha. This is the alpha used in the Pk measurements.
+           It can be different from the alpha used in the geometry object.
+
+        Returns
+        -------
+        float
+            The value of alpha.
+        '''
+        if self._alpha is None:
+            return self.geometry.alpha
+        return self._alpha
+    
+    @alpha.setter
+    def alpha(self, alpha):
+        '''Sets the value of alpha. This is the alpha used in the P(k) measurements.
+           It can be different from the alpha used in the geometry object.
+
+        Parameters
+        ----------
+        alpha : float
+            The value of alpha.
+        '''
+        self._alpha = alpha
+
+    def compute_covariance(self, ells=(0, 2, 4)):
+        '''Compute the covariance matrix for the given geometry and power spectra.
+
+        Parameters
+        ----------
+        ells : tuple, optional
+            Multipoles of the power spectra to have the covariance calculated for.
+        '''
+
+        self._ells = ells
+        self._mshape = (self.kbins, self.kbins)
+
+        if isinstance(self.geometry, geometry.BoxGeometry):
+            return self._compute_covariance_box()
+
+        if isinstance(self.geometry, geometry.SurveyGeometry):
+            return self._compute_covariance_survey()
+
+    def _compute_covariance_box(self):
+        raise NotImplementedError
+
+    def _compute_covariance_survey(self):
+        raise NotImplementedError
+
+    @property
+    def shotnoise(self):
+        '''Shotnoise of the sample in the same normalization as the power spectrum.
+
+        Returns
+        -------
+        float
+            Shotnoise value.'''
+        
+        if isinstance(self.geometry, geometry.SurveyGeometry):
+            return self.pk_renorm * (1 + self.alpha) * self.geometry.I('12')/self.geometry.I('22')
+        elif isinstance(self.geometry, geometry.BoxGeometry):
+            return self.pk_renorm * self.geometry.shotnoise
+
+    def set_shotnoise(self, shotnoise):
+        '''Determines the relative normalization of the power spectrum by comparing
+           the estimated FKP shotnoise with the given shotnoise value.
+
+        Parameters
+        ----------
+        shotnoise : float
+            shotnoise with same normalization as the power spectrum.
+        '''
+
+        self.logger.info(f'Estimated shotnoise was {self.shotnoise}')
+        self.logger.info(f'Forcing it to be {shotnoise}.')
+
+        self.pk_renorm *= shotnoise / self.shotnoise
+        self.logger.info(f'Setting pk_renorm to {self.pk_renorm} based on given shotnoise value.')
