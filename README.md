@@ -66,7 +66,7 @@ b1, zeff = 2.0, 0.5
 t0 = thecov.covariance.RegularTrispectrumCovariance(geometry)
 t0.set_kbins(kmin, kmax, dk)
 
-plin = cosmo.get_fourier().pk_interpolator()
+plin = cosmo.get_fourier()
 
 t0.set_linear_matter_pk(np.vectorize(lambda k: plin.pk_kz(k, zeff)))
 
